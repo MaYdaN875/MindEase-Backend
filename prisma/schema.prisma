@@ -7,20 +7,167 @@ generator client {
   provider = "prisma-client-js"
 }
 
-enum Role {
-  USER
-  PSYCHOLOGIST
-  ADMIN
+model User {
+  id                  String                      @id @default(uuid())
+  email               String                      @unique
+  passwordHash        String
+  name                String
+  phone               String?
+  resetPasswordToken  String?
+  resetPasswordExp    DateTime?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  userRoles           UserRole[]
+  psychologistProfile PsychologistProfile?
+  auditLogs           AuditLog[]
+  consents            UserConsent[]
+  notifications       Notification[]
+  verificationReviews VerificationReview[]        @relation("RevisorReviews")
+  changedStatusLogs   VerificationStatusHistory[] @relation("StatusChanges")
 }
 
-model User {
-  id                 String    @id @default(uuid())
-  email              String    @unique
-  passwordHash       String
-  name               String
-  role               Role      @default(USER)
-  resetPasswordToken String?
-  resetPasswordExp   DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+model Role {
+  id        String     @id @default(uuid())
+  name      String     @unique // e.g. "USER", "PSYCHOLOGIST_APPLICANT", "PSYCHOLOGIST_VERIFIED", "MODERATOR", "REVISOR", "SUPPORT", "ADMIN", "SUPERADMIN"
+  userRoles UserRole[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+enum PsychologistStatus {
+  REGISTRO_INCOMPLETO
+  PENDIENTE_REVISION
+  EN_REVISION
+  REQUIERE_CAMBIOS
+  VERIFICADO
+  RECHAZADO
+  SUSPENDIDO
+  INACTIVO
+}
+
+model PsychologistProfile {
+  id                   String                      @id @default(uuid())
+  userId               String                      @unique
+  user                 User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photoUrl             String?
+  description          String?
+  academicBackground   String?
+  experience           String?
+  consultationPrice    Float?
+  availability         Json? // Stores calendar availability structure
+  languages            String?
+  location             String?
+  licenseNumber        String?
+  status               PsychologistStatus          @default(REGISTRO_INCOMPLETO)
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  specialties          PsychologistSpecialty[]
+  documents            ProfessionalDocument[]
+  statusHistory        VerificationStatusHistory[]
+  verificationRequests VerificationRequest[]
+}
+
+model Specialty {
+  id            String                  @id @default(uuid())
+  name          String                  @unique
+  psychologists PsychologistSpecialty[]
+}
+
+model PsychologistSpecialty {
+  psychologistId String
+  specialtyId    String
+  psychologist   PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  specialty      Specialty           @relation(fields: [specialtyId], references: [id], onDelete: Cascade)
+
+  @@id([psychologistId, specialtyId])
+}
+
+enum DocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model ProfessionalDocument {
+  id               String              @id @default(uuid())
+  psychologistId   String
+  psychologist     PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  documentType     String // e.g., "ID", "DEGREE", "LICENSE", "OTHER"
+  storageKey       String
+  originalFilename String
+  mimeType         String
+  fileSize         Int
+  status           DocumentStatus      @default(PENDING)
+  uploadedAt       DateTime            @default(now())
+  expiresAt        DateTime?
+}
+
+model VerificationRequest {
+  id             String               @id @default(uuid())
+  psychologistId String
+  psychologist   PsychologistProfile  @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  revisorId      String?
+  status         String               @default("PENDING") // PENDING, IN_PROGRESS, RESOLVED
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  reviews        VerificationReview[]
+}
+
+model VerificationReview {
+  id        String              @id @default(uuid())
+  requestId String
+  request   VerificationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  revisorId String
+  revisor   User                @relation("RevisorReviews", fields: [revisorId], references: [id], onDelete: Cascade)
+  decision  String // APPROVE, REQUEST_CHANGES, REJECT
+  notes     String?
+  createdAt DateTime            @default(now())
+}
+
+model VerificationStatusHistory {
+  id             String              @id @default(uuid())
+  psychologistId String
+  psychologist   PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  fromStatus     PsychologistStatus
+  toStatus       PsychologistStatus
+  changedById    String
+  changedBy      User                @relation("StatusChanges", fields: [changedById], references: [id], onDelete: Cascade)
+  comment        String?
+  changedAt      DateTime            @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  ipAddress String?
+  userAgent String?
+  details   Json?
+  createdAt DateTime @default(now())
+}
+
+model UserConsent {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  consentType String // e.g., "PRIVACY_POLICY", "PROFESSIONAL_TERMS"
+  acceptedAt  DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  content   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
 }

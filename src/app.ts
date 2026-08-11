@@ -3,6 +3,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
+import psychologistRoutes from './routes/psychologistRoutes';
+import adminRoutes from './routes/adminRoutes';
 import { errorHandler } from './middlewares/errorMiddleware';
 
 dotenv.config();
@@ -20,6 +22,8 @@ app.get('/health', (_req, res) => {
 // App routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/psychologists', psychologistRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Global Error Handler
 app.use(errorHandler);

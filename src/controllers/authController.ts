@@ -10,7 +10,9 @@ const registerSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(6, 'Password must be at least 6 characters long'),
   name: z.string().min(2, 'Name must be at least 2 characters long'),
+  phone: z.string().optional(),
   role: z.enum(['USER', 'PSYCHOLOGIST', 'ADMIN']).optional(),
+  acceptedPrivacy: z.boolean().optional(),
 });
 
 const loginSchema = z.object({
@@ -45,16 +47,55 @@ export const register = async (
 
     const passwordHash = await hashPassword(validated.password);
 
+    const roleName = validated.role === 'PSYCHOLOGIST' ? 'PSYCHOLOGIST_APPLICANT' : 'USER';
+
+    const roleObj = await prisma.role.findUnique({
+      where: { name: roleName },
+    });
+
+    if (!roleObj) {
+      throw new AppError('Role configuration error', 500);
+    }
+
     const user = await prisma.user.create({
       data: {
         email: validated.email.toLowerCase(),
         passwordHash,
         name: validated.name,
-        role: validated.role || 'USER',
+        phone: validated.phone || null,
+        userRoles: {
+          create: {
+            roleId: roleObj.id,
+          },
+        },
+        ...(validated.acceptedPrivacy && {
+          consents: {
+            create: {
+              consentType: 'PRIVACY_POLICY',
+            },
+          },
+        }),
+      },
+      include: {
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
       },
     });
 
-    const token = generateToken({ userId: user.id, role: user.role });
+    if (roleName === 'PSYCHOLOGIST_APPLICANT') {
+      await prisma.psychologistProfile.create({
+        data: {
+          userId: user.id,
+          status: 'REGISTRO_INCOMPLETO',
+        },
+      });
+    }
+
+    const rolesList = user.userRoles.map((ur) => ur.role.name);
+    const token = generateToken({ userId: user.id, roles: rolesList });
 
     res.status(201).json({
       status: 'success',
@@ -63,7 +104,8 @@ export const register = async (
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role,
+          phone: user.phone,
+          roles: rolesList,
           createdAt: user.createdAt,
         },
         token,
@@ -87,13 +129,21 @@ export const login = async (
 
     const user = await prisma.user.findUnique({
       where: { email: validated.email.toLowerCase() },
+      include: {
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
+      },
     });
 
     if (!user || !(await comparePassword(validated.password, user.passwordHash))) {
       throw new AppError('Incorrect email or password', 401);
     }
 
-    const token = generateToken({ userId: user.id, role: user.role });
+    const rolesList = user.userRoles.map((ur) => ur.role.name);
+    const token = generateToken({ userId: user.id, roles: rolesList });
 
     res.status(200).json({
       status: 'success',
@@ -102,7 +152,8 @@ export const login = async (
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role,
+          phone: user.phone,
+          roles: rolesList,
         },
         token,
       },
@@ -146,7 +197,6 @@ export const forgotPassword = async (
       },
     });
 
-    // Simulate email dispatch
     console.log(`\n==========================================`);
     console.log(`PASSWORD RESET FOR: ${user.email}`);
     console.log(`Token: ${resetToken}`);

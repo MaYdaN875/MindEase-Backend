@@ -22,11 +22,20 @@ export const getProfile = async (
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
+      include: {
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
+      },
     });
 
     if (!user) {
       throw new AppError('User not found', 404);
     }
+
+    const rolesList = user.userRoles.map((ur) => ur.role.name);
 
     res.status(200).json({
       status: 'success',
@@ -35,7 +44,8 @@ export const getProfile = async (
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role,
+          phone: user.phone,
+          roles: rolesList,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
         },
@@ -61,6 +71,13 @@ export const updateProfile = async (
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
+      include: {
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
+      },
     });
 
     if (!user) {
@@ -83,6 +100,8 @@ export const updateProfile = async (
       updateData.email = emailLower;
     }
 
+    const rolesList = user.userRoles.map((ur) => ur.role.name);
+
     if (Object.keys(updateData).length === 0) {
       res.status(200).json({
         status: 'success',
@@ -92,7 +111,8 @@ export const updateProfile = async (
             id: user.id,
             email: user.email,
             name: user.name,
-            role: user.role,
+            phone: user.phone,
+            roles: rolesList,
           },
         },
       });
@@ -102,7 +122,16 @@ export const updateProfile = async (
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: updateData,
+      include: {
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
+      },
     });
+
+    const updatedRolesList = updatedUser.userRoles.map((ur) => ur.role.name);
 
     res.status(200).json({
       status: 'success',
@@ -111,7 +140,8 @@ export const updateProfile = async (
           id: updatedUser.id,
           email: updatedUser.email,
           name: updatedUser.name,
-          role: updatedUser.role,
+          phone: updatedUser.phone,
+          roles: updatedRolesList,
           createdAt: updatedUser.createdAt,
           updatedAt: updatedUser.updatedAt,
         },
