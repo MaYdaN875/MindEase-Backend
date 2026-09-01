@@ -31,6 +31,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - ./storage:/usr/src/app/storage
     # Deploy migrations and start the server
     command: sh -c "npx prisma migrate deploy && node dist/server.js"
 
