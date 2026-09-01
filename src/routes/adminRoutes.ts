@@ -12,6 +12,10 @@ import {
   listRoles,
   updateUserRoles,
   updateUserStatus,
+  listSpecialties,
+  createSpecialty,
+  updateSpecialty,
+  deleteSpecialty,
 } from '../controllers/adminController';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { checkRole } from '../middlewares/rbacMiddleware';
@@ -63,5 +67,11 @@ router.get('/users', checkRole(['ADMIN', 'SUPERADMIN']) as any, listUsers as any
 router.get('/roles', checkRole(['ADMIN', 'SUPERADMIN']) as any, listRoles as any);
 router.put('/users/:userId/roles', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateUserRoles as any);
 router.put('/users/:userId/status', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateUserStatus as any);
+
+// Dynamic Specialties Management endpoints
+router.get('/specialties', checkRole(['ADMIN', 'REVISOR', 'SUPERADMIN']) as any, listSpecialties as any);
+router.post('/specialties', checkRole(['ADMIN', 'SUPERADMIN']) as any, createSpecialty as any);
+router.put('/specialties/:specialtyId', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateSpecialty as any);
+router.delete('/specialties/:specialtyId', checkRole(['ADMIN', 'SUPERADMIN']) as any, deleteSpecialty as any);
 
 export default router;

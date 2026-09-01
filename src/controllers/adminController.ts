@@ -755,3 +755,182 @@ export const updateUserStatus = async (
   }
 };
 
+export const listSpecialties = async (
+  _req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const specialties = await prisma.specialty.findMany({
+      include: {
+        _count: {
+          select: {
+            psychologists: true,
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        specialties,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createSpecialty = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { name } = req.body;
+    const adminId = req.user?.userId;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      throw new AppError('El nombre de la especialidad es obligatorio', 400);
+    }
+
+    const trimmedName = name.trim();
+
+    const existing = await prisma.specialty.findFirst({
+      where: { name: { equals: trimmedName, mode: 'insensitive' } },
+    });
+
+    if (existing) {
+      throw new AppError('Ya existe una especialidad con este nombre', 409);
+    }
+
+    const specialty = await prisma.specialty.create({
+      data: { name: trimmedName },
+    });
+
+    await createAuditLog(adminId!, 'CREATE_SPECIALTY', {
+      specialtyId: specialty.id,
+      name: specialty.name,
+    });
+
+    res.status(201).json({
+      status: 'success',
+      data: {
+        specialty,
+      },
+      message: 'Especialidad creada con éxito',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateSpecialty = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { specialtyId } = req.params;
+    const { name } = req.body;
+    const adminId = req.user?.userId;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      throw new AppError('El nombre de la especialidad es obligatorio', 400);
+    }
+
+    const trimmedName = name.trim();
+
+    const specialty = await prisma.specialty.findUnique({
+      where: { id: specialtyId },
+    });
+
+    if (!specialty) {
+      throw new AppError('Especialidad no encontrada', 404);
+    }
+
+    const duplicate = await prisma.specialty.findFirst({
+      where: {
+        name: { equals: trimmedName, mode: 'insensitive' },
+        id: { not: specialtyId },
+      },
+    });
+
+    if (duplicate) {
+      throw new AppError('Ya existe otra especialidad con este nombre', 409);
+    }
+
+    const updated = await prisma.specialty.update({
+      where: { id: specialtyId },
+      data: { name: trimmedName },
+    });
+
+    await createAuditLog(adminId!, 'UPDATE_SPECIALTY', {
+      specialtyId,
+      oldName: specialty.name,
+      newName: trimmedName,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        specialty: updated,
+      },
+      message: 'Especialidad actualizada con éxito',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteSpecialty = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { specialtyId } = req.params;
+    const adminId = req.user?.userId;
+
+    const specialty = await prisma.specialty.findUnique({
+      where: { id: specialtyId },
+      include: {
+        _count: {
+          select: {
+            psychologists: true,
+          },
+        },
+      },
+    });
+
+    if (!specialty) {
+      throw new AppError('Especialidad no encontrada', 404);
+    }
+
+    if (specialty._count.psychologists > 0) {
+      throw new AppError(
+        `No se puede eliminar la especialidad porque está asignada a ${specialty._count.psychologists} psicólogo(s).`,
+        400
+      );
+    }
+
+    await prisma.specialty.delete({
+      where: { id: specialtyId },
+    });
+
+    await createAuditLog(adminId!, 'DELETE_SPECIALTY', {
+      specialtyId,
+      deletedName: specialty.name,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Especialidad eliminada con éxito',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
