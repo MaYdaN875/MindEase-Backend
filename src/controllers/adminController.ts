@@ -71,8 +71,13 @@ export const getApplication = async (
   try {
     const { applicationId } = req.params;
 
-    const request = await prisma.verificationRequest.findUnique({
-      where: { id: applicationId },
+    let request = await prisma.verificationRequest.findFirst({
+      where: {
+        OR: [
+          { id: applicationId },
+          { psychologistId: applicationId },
+        ],
+      },
       include: {
         psychologist: {
           include: {
@@ -108,7 +113,52 @@ export const getApplication = async (
     });
 
     if (!request) {
-      throw new AppError('Verification request not found', 404);
+      // Fallback: check if applicationId is a psychologistProfile id directly
+      const profile = await prisma.psychologistProfile.findUnique({
+        where: { id: applicationId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          specialties: {
+            include: {
+              specialty: true,
+            },
+          },
+          documents: true,
+          statusHistory: {
+            include: {
+              changedBy: {
+                select: {
+                  name: true,
+                  email: true,
+                },
+              },
+            },
+            orderBy: { changedAt: 'desc' },
+          },
+        },
+      });
+
+      if (!profile) {
+        throw new AppError('Verification request or psychologist profile not found', 404);
+      }
+
+      request = {
+        id: profile.id,
+        psychologistId: profile.id,
+        revisorId: null,
+        status: profile.status === 'VERIFICADO' ? 'RESOLVED' : 'PENDING',
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+        psychologist: profile,
+        reviews: [],
+      } as any;
     }
 
     res.status(200).json({
@@ -480,3 +530,228 @@ export const getAuditLogs = async (
     next(error);
   }
 };
+
+export const listUsers = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { search, role, status } = req.query;
+
+    const where: any = {};
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search as string, mode: 'insensitive' } },
+        { email: { contains: search as string, mode: 'insensitive' } },
+      ];
+    }
+
+    if (role) {
+      where.userRoles = {
+        some: {
+          role: {
+            name: role as string,
+          },
+        },
+      };
+    }
+
+    if (status) {
+      where.psychologistProfile = {
+        status: status as any,
+      };
+    }
+
+    const users = await prisma.user.findMany({
+      where,
+      include: {
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
+        psychologistProfile: {
+          include: {
+            specialties: {
+              include: {
+                specialty: true,
+              },
+            },
+            documents: {
+              select: {
+                id: true,
+                documentType: true,
+                status: true,
+              },
+            },
+          },
+        },
+        consents: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        users,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listRoles = async (
+  _req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const roles = await prisma.role.findMany({
+      orderBy: { name: 'asc' },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        roles,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateUserRoles = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { userId } = req.params;
+    const { roles } = req.body;
+    const adminId = req.user?.userId;
+
+    if (!Array.isArray(roles) || roles.length === 0) {
+      throw new AppError('Debes especificar al menos un rol válido', 400);
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { userRoles: { include: { role: true } } },
+    });
+
+    if (!user) {
+      throw new AppError('Usuario no encontrado', 404);
+    }
+
+    const validRoles = await prisma.role.findMany({
+      where: { name: { in: roles } },
+    });
+
+    if (validRoles.length !== roles.length) {
+      throw new AppError('Uno o más roles especificados no existen', 400);
+    }
+
+    await prisma.$transaction([
+      prisma.userRole.deleteMany({
+        where: { userId },
+      }),
+      prisma.userRole.createMany({
+        data: validRoles.map((r) => ({
+          userId,
+          roleId: r.id,
+        })),
+      }),
+    ]);
+
+    await createAuditLog(adminId!, 'UPDATE_USER_ROLES', {
+      targetUserId: userId,
+      oldRoles: user.userRoles.map((ur) => ur.role.name),
+      newRoles: roles,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Roles actualizados con éxito',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateUserStatus = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { userId } = req.params;
+    const { status } = req.body;
+    const adminId = req.user?.userId;
+
+    if (!status) {
+      throw new AppError('Debes especificar el nuevo estado', 400);
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { psychologistProfile: true },
+    });
+
+    if (!user) {
+      throw new AppError('Usuario no encontrado', 404);
+    }
+
+    const isSuspending = status === 'SUSPENDED' || status === 'SUSPENDIDO';
+
+    // 1. Update User model status
+    const newUserStatus = isSuspending ? 'SUSPENDED' : 'ACTIVE';
+    await prisma.user.update({
+      where: { id: userId },
+      data: { status: newUserStatus },
+    });
+
+    // 2. If user is a psychologist, update psychologistProfile status accordingly
+    if (user.psychologistProfile) {
+      let newPsychologistStatus = status;
+      if (isSuspending) {
+        newPsychologistStatus = 'SUSPENDIDO';
+      } else if (status === 'ACTIVE' || status === 'ACTIVO') {
+        newPsychologistStatus = 'VERIFICADO';
+      }
+
+      await prisma.psychologistProfile.update({
+        where: { id: user.psychologistProfile.id },
+        data: { status: newPsychologistStatus as any },
+      });
+
+      await prisma.verificationStatusHistory.create({
+        data: {
+          psychologistId: user.psychologistProfile.id,
+          fromStatus: user.psychologistProfile.status,
+          toStatus: newPsychologistStatus as any,
+          changedById: adminId!,
+          comment: `Estado administrativo actualizado a ${newPsychologistStatus}`,
+        },
+      });
+    }
+
+    await createAuditLog(adminId!, 'UPDATE_USER_STATUS', {
+      targetUserId: userId,
+      newStatus: newUserStatus,
+      psychologistStatus: user.psychologistProfile ? (isSuspending ? 'SUSPENDIDO' : 'VERIFICADO') : undefined,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      message: `Estado del usuario actualizado a ${isSuspending ? 'SUSPENDIDO' : 'ACTIVO'}`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

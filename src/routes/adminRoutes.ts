@@ -8,6 +8,10 @@ import {
   rejectApplication,
   downloadDocument,
   getAuditLogs,
+  listUsers,
+  listRoles,
+  updateUserRoles,
+  updateUserStatus,
 } from '../controllers/adminController';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { checkRole } from '../middlewares/rbacMiddleware';
@@ -53,5 +57,11 @@ router.get('/documents/:documentId/download', downloadDocument as any);
 
 // Require ADMIN or SUPERADMIN roles
 router.get('/audit-logs', checkRole(['ADMIN', 'SUPERADMIN']) as any, getAuditLogs as any);
+
+// User & Role Management endpoints
+router.get('/users', checkRole(['ADMIN', 'SUPERADMIN']) as any, listUsers as any);
+router.get('/roles', checkRole(['ADMIN', 'SUPERADMIN']) as any, listRoles as any);
+router.put('/users/:userId/roles', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateUserRoles as any);
+router.put('/users/:userId/status', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateUserStatus as any);
 
 export default router;
