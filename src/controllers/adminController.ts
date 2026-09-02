@@ -303,6 +303,16 @@ export const approveApplication = async (
 
     await createAuditLog(adminId!, 'APPROVE_APPLICATION', { applicationId, psychologistId: psychologist.id });
 
+    // Send notification to psychologist
+    await prisma.notification.create({
+      data: {
+        userId: psychologist.userId,
+        title: '¡Expediente Aprobado!',
+        content: 'Tu perfil profesional y documentación han sido aprobados con éxito. Tu cuenta ahora cuenta con el distintivo de Psicólogo Verificado.',
+        isRead: false,
+      },
+    });
+
     res.status(200).json({
       status: 'success',
       message: 'Solicitud aprobada con éxito. El psicólogo ya es un profesional verificado.',
@@ -371,6 +381,16 @@ export const requestChanges = async (
     });
 
     await createAuditLog(adminId!, 'REQUEST_CHANGES', { applicationId, notes });
+
+    // Send notification to psychologist
+    await prisma.notification.create({
+      data: {
+        userId: psychologist.userId,
+        title: 'Correcciones Requeridas en tu Expediente',
+        content: `El comité de revisión ha solicitado las siguientes correcciones en tu documentación: ${notes}`,
+        isRead: false,
+      },
+    });
 
     res.status(200).json({
       status: 'success',
@@ -441,6 +461,16 @@ export const rejectApplication = async (
 
     await createAuditLog(adminId!, 'REJECT_APPLICATION', { applicationId, notes });
 
+    // Send notification to psychologist
+    await prisma.notification.create({
+      data: {
+        userId: psychologist.userId,
+        title: 'Solicitud de Verificación No Aprobada',
+        content: `Tu solicitud de verificación no ha sido aprobada: ${notes}`,
+        isRead: false,
+      },
+    });
+
     res.status(200).json({
       status: 'success',
       message: 'Solicitud rechazada correctamente.',
@@ -502,17 +532,98 @@ export const downloadDocument = async (
   }
 };
 
-export const getAuditLogs = async (
-  _req: AuthenticatedRequest,
+export const updateDocumentStatus = async (
+  req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
+    const { documentId } = req.params;
+    const { status, expiresAt } = req.body;
+    const adminId = req.user?.userId;
+
+    if (!['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
+      throw new AppError('Estado de documento no válido (PENDING, APPROVED, REJECTED)', 400);
+    }
+
+    const document = await prisma.professionalDocument.findUnique({
+      where: { id: documentId },
+      include: {
+        psychologist: true,
+      },
+    });
+
+    if (!document) {
+      throw new AppError('Documento no encontrado', 404);
+    }
+
+    const updateData: any = {
+      status,
+    };
+
+    if (expiresAt !== undefined) {
+      updateData.expiresAt = expiresAt ? new Date(expiresAt) : null;
+    }
+
+    const updatedDocument = await prisma.professionalDocument.update({
+      where: { id: documentId },
+      data: updateData,
+    });
+
+    await createAuditLog(adminId!, 'UPDATE_DOCUMENT_STATUS', {
+      documentId,
+      psychologistId: document.psychologistId,
+      documentType: document.documentType,
+      oldStatus: document.status,
+      newStatus: status,
+      expiresAt: updateData.expiresAt,
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        document: updatedDocument,
+      },
+      message: `Documento ${document.documentType} marcado como ${status}`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAuditLogs = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { search, action, limit } = req.query;
+
+    const where: any = {};
+
+    if (action && typeof action === 'string' && action !== 'all') {
+      where.action = action;
+    }
+
+    if (search && typeof search === 'string') {
+      where.OR = [
+        { action: { contains: search, mode: 'insensitive' } },
+        { user: { name: { contains: search, mode: 'insensitive' } } },
+        { user: { email: { contains: search, mode: 'insensitive' } } },
+        { ipAddress: { contains: search } },
+      ];
+    }
+
+    const take = limit ? parseInt(limit as string, 10) : 100;
+
     const logs = await prisma.auditLog.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
+      take: Math.min(take, 200),
       include: {
         user: {
           select: {
+            id: true,
             name: true,
             email: true,
           },
@@ -746,6 +857,18 @@ export const updateUserStatus = async (
       psychologistStatus: user.psychologistProfile ? (isSuspending ? 'SUSPENDIDO' : 'VERIFICADO') : undefined,
     });
 
+    // Send notification to the user
+    await prisma.notification.create({
+      data: {
+        userId,
+        title: isSuspending ? 'Cuenta Suspendida' : 'Cuenta Reactivada',
+        content: isSuspending
+          ? 'Tu cuenta ha sido suspendida temporalmente por un administrador.'
+          : 'Tu cuenta ha sido reactivada exitosamente.',
+        isRead: false,
+      },
+    });
+
     res.status(200).json({
       status: 'success',
       message: `Estado del usuario actualizado a ${isSuspending ? 'SUSPENDIDO' : 'ACTIVO'}`,
@@ -928,6 +1051,306 @@ export const deleteSpecialty = async (
     res.status(200).json({
       status: 'success',
       message: 'Especialidad eliminada con éxito',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ----------------------------------------------------
+// Dashboard & Analytics
+// ----------------------------------------------------
+export const getDashboardStats = async (
+  _req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const [
+      totalUsers,
+      activeUsers,
+      suspendedUsers,
+      totalPsychologists,
+      verifiedPsychologists,
+      pendingRequests,
+      resolvedRequests,
+      statusGroups,
+      topSpecialties,
+      recentAuditLogs,
+    ] = await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({ where: { status: 'ACTIVE' } }),
+      prisma.user.count({ where: { status: 'SUSPENDED' } }),
+      prisma.psychologistProfile.count(),
+      prisma.psychologistProfile.count({ where: { status: 'VERIFICADO' } }),
+      prisma.verificationRequest.count({ where: { status: 'PENDING' } }),
+      prisma.verificationRequest.count({ where: { status: 'RESOLVED' } }),
+      prisma.psychologistProfile.groupBy({
+        by: ['status'],
+        _count: { id: true },
+      }),
+      prisma.specialty.findMany({
+        select: {
+          id: true,
+          name: true,
+          _count: {
+            select: { psychologists: true },
+          },
+        },
+        orderBy: {
+          psychologists: { _count: 'desc' },
+        },
+        take: 5,
+      }),
+      prisma.auditLog.findMany({
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: {
+            select: { id: true, name: true, email: true },
+          },
+        },
+      }),
+    ]);
+
+    const approvedReviews = await prisma.verificationReview.count({
+      where: { decision: 'APPROVE' },
+    });
+    const rejectedReviews = await prisma.verificationReview.count({
+      where: { decision: 'REJECT' },
+    });
+    const totalDecisions = approvedReviews + rejectedReviews;
+    const approvalRate = totalDecisions > 0 ? Math.round((approvedReviews / totalDecisions) * 100) : 100;
+
+    const statusDistribution: Record<string, number> = {};
+    for (const group of statusGroups) {
+      statusDistribution[group.status] = group._count.id;
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        stats: {
+          totalUsers,
+          activeUsers,
+          suspendedUsers,
+          totalPsychologists,
+          verifiedPsychologists,
+          pendingRequests,
+          resolvedRequests,
+          approvalRate,
+          statusDistribution,
+          topSpecialties: topSpecialties.map((s) => ({
+            id: s.id,
+            name: s.name,
+            count: s._count.psychologists,
+          })),
+          recentAuditLogs,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ----------------------------------------------------
+// Security & Compliance CSV Export
+// ----------------------------------------------------
+export const exportAuditLogsCsv = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const adminId = req.user?.userId;
+    const logs = await prisma.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    const csvRows = [
+      ['Timestamp', 'Admin / User Name', 'Email', 'Action', 'IP Address', 'Details'].join(','),
+    ];
+
+    for (const log of logs) {
+      const timestamp = new Date(log.createdAt).toISOString();
+      const userName = (log.user?.name || 'System / Automated').replace(/"/g, '""');
+      const userEmail = (log.user?.email || 'N/A').replace(/"/g, '""');
+      const action = (log.action || '').replace(/"/g, '""');
+      const ip = (log.ipAddress || '127.0.0.1').replace(/"/g, '""');
+      const details = JSON.stringify(log.details || {}).replace(/"/g, '""');
+
+      csvRows.push(
+        `"${timestamp}","${userName}","${userEmail}","${action}","${ip}","${details}"`
+      );
+    }
+
+    await createAuditLog(adminId!, 'DATA_EXPORT', {
+      format: 'CSV',
+      totalRecords: logs.length,
+    });
+
+    const csvContent = csvRows.join('\r\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="mindease_compliance_audit_logs.csv"'
+    );
+    res.status(200).send(csvContent);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ----------------------------------------------------
+// System Notifications Management
+// ----------------------------------------------------
+export const listNotifications = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+
+    const notifications = await prisma.notification.findMany({
+      where: {
+        OR: [
+          { userId },
+          { user: { userRoles: { some: { role: { name: { in: ['ADMIN', 'SUPERADMIN'] } } } } } },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      include: {
+        user: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    const unreadCount = await prisma.notification.count({
+      where: {
+        userId,
+        isRead: false,
+      },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        notifications,
+        unreadCount,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const markNotificationRead = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { notificationId } = req.params;
+
+    const notification = await prisma.notification.update({
+      where: { id: notificationId },
+      data: { isRead: true },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: { notification },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const markAllNotificationsRead = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+
+    await prisma.notification.updateMany({
+      where: { userId, isRead: false },
+      data: { isRead: true },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Todas las notificaciones marcadas como leídas',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const broadcastNotification = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const adminId = req.user?.userId;
+    const { title, message, targetUserId } = req.body;
+
+    if (!title || !message) {
+      throw new AppError('Título y mensaje son obligatorios', 400);
+    }
+
+    if (targetUserId) {
+      const notif = await prisma.notification.create({
+        data: {
+          userId: targetUserId,
+          title,
+          content: message,
+          isRead: false,
+        },
+      });
+
+      await createAuditLog(adminId!, 'BROADCAST_NOTIFICATION', {
+        targetUserId,
+        title,
+      });
+
+      res.status(201).json({
+        status: 'success',
+        data: { notification: notif },
+        message: 'Notificación enviada al usuario',
+      });
+      return;
+    }
+
+    const allUsers = await prisma.user.findMany({ select: { id: true } });
+    await prisma.notification.createMany({
+      data: allUsers.map((u) => ({
+        userId: u.id,
+        title,
+        content: message,
+        isRead: false,
+      })),
+    });
+
+    await createAuditLog(adminId!, 'BROADCAST_NOTIFICATION', {
+      broadcastCount: allUsers.length,
+      title,
+    });
+
+    res.status(201).json({
+      status: 'success',
+      message: `Aviso emitido a ${allUsers.length} usuarios del sistema`,
     });
   } catch (error) {
     next(error);

@@ -7,6 +7,7 @@ import {
   requestChanges,
   rejectApplication,
   downloadDocument,
+  updateDocumentStatus,
   getAuditLogs,
   listUsers,
   listRoles,
@@ -16,6 +17,12 @@ import {
   createSpecialty,
   updateSpecialty,
   deleteSpecialty,
+  getDashboardStats,
+  exportAuditLogsCsv,
+  listNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  broadcastNotification,
 } from '../controllers/adminController';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { checkRole } from '../middlewares/rbacMiddleware';
@@ -23,6 +30,13 @@ import { checkRole } from '../middlewares/rbacMiddleware';
 const router = Router();
 
 router.use(authMiddleware as any);
+
+// Dashboard & Metrics
+router.get(
+  '/dashboard/stats',
+  checkRole(['ADMIN', 'REVISOR', 'SUPERADMIN']) as any,
+  getDashboardStats as any
+);
 
 // Require ADMIN or REVISOR roles
 router.get(
@@ -56,10 +70,16 @@ router.post(
   rejectApplication as any
 );
 
-// Secure file downloads (authorization checks internally)
+// Secure file downloads and document status validation
 router.get('/documents/:documentId/download', downloadDocument as any);
+router.put(
+  '/documents/:documentId/status',
+  checkRole(['ADMIN', 'REVISOR']) as any,
+  updateDocumentStatus as any
+);
 
-// Require ADMIN or SUPERADMIN roles
+// Security, Audit Logs & Compliance Export
+router.get('/audit-logs/export-csv', checkRole(['ADMIN', 'SUPERADMIN']) as any, exportAuditLogsCsv as any);
 router.get('/audit-logs', checkRole(['ADMIN', 'SUPERADMIN']) as any, getAuditLogs as any);
 
 // User & Role Management endpoints
@@ -73,5 +93,11 @@ router.get('/specialties', checkRole(['ADMIN', 'REVISOR', 'SUPERADMIN']) as any,
 router.post('/specialties', checkRole(['ADMIN', 'SUPERADMIN']) as any, createSpecialty as any);
 router.put('/specialties/:specialtyId', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateSpecialty as any);
 router.delete('/specialties/:specialtyId', checkRole(['ADMIN', 'SUPERADMIN']) as any, deleteSpecialty as any);
+
+// System Notifications endpoints
+router.get('/notifications', listNotifications as any);
+router.put('/notifications/mark-all-read', markAllNotificationsRead as any);
+router.put('/notifications/:notificationId/read', markNotificationRead as any);
+router.post('/notifications/broadcast', checkRole(['ADMIN', 'SUPERADMIN']) as any, broadcastNotification as any);
 
 export default router;
