@@ -453,3 +453,150 @@ export const getPublicProfileById = async (
   }
 };
 
+export const getPsychologistDashboard = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const userId = req.user!.userId;
+
+    const profile = await prisma.psychologistProfile.findUnique({
+      where: { userId },
+      include: {
+        user: {
+          select: { id: true, name: true, email: true, phone: true },
+        },
+      },
+    });
+
+    if (!profile) {
+      throw new AppError('No posees un perfil de psicólogo registrado', 404);
+    }
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // 1. Next immediate appointment (upcoming or scheduled for today)
+    const nextAppointment = await prisma.appointment.findFirst({
+      where: {
+        psychologistId: profile.id,
+        status: { in: ['CONFIRMED', 'PENDING'] },
+        OR: [
+          { startAt: { gte: now } },
+          { startAt: { gte: startOfToday } },
+        ],
+      },
+      orderBy: { startAt: 'asc' },
+      include: {
+        user: {
+          select: { id: true, name: true, email: true, phone: true },
+        },
+        consultation: true,
+      },
+    });
+
+    // 2. Metric counts
+    const upcomingCount = await prisma.appointment.count({
+      where: {
+        psychologistId: profile.id,
+        status: 'CONFIRMED',
+        startAt: { gte: now },
+      },
+    });
+
+    const pendingCount = await prisma.appointment.count({
+      where: {
+        psychologistId: profile.id,
+        status: 'PENDING',
+      },
+    });
+
+    const completedCount = await prisma.appointment.count({
+      where: {
+        psychologistId: profile.id,
+        status: 'COMPLETED',
+      },
+    });
+
+    // Distinct patients count
+    const distinctPatients = await prisma.appointment.groupBy({
+      by: ['userId'],
+      where: {
+        psychologistId: profile.id,
+        status: { notIn: ['CANCELLED'] },
+      },
+    });
+    const totalPatientsCount = distinctPatients.length;
+
+    // Monthly Earnings (sum of price of CONFIRMED or COMPLETED appointments in current month)
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthlyAppointments = await prisma.appointment.findMany({
+      where: {
+        psychologistId: profile.id,
+        status: { in: ['CONFIRMED', 'COMPLETED'] },
+        startAt: { gte: startOfMonth },
+      },
+      select: { price: true },
+    });
+    const monthlyEarnings = monthlyAppointments.reduce(
+      (acc, curr) => acc + (curr.price || 0),
+      0
+    );
+
+    // 3. Recent Activity (last 5 appointments created or updated)
+    const recentAppointments = await prisma.appointment.findMany({
+      where: { psychologistId: profile.id },
+      orderBy: { updatedAt: 'desc' },
+      take: 5,
+      include: {
+        user: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    const recentActivity = recentAppointments.map((appt) => {
+      let title = `Cita con ${appt.user.name}`;
+      if (appt.status === 'CONFIRMED') title = `Cita confirmada con ${appt.user.name}`;
+      else if (appt.status === 'COMPLETED') title = `Consulta completada con ${appt.user.name}`;
+      else if (appt.status === 'CANCELLED') title = `Cita cancelada con ${appt.user.name}`;
+      else if (appt.status === 'PENDING') title = `Nueva solicitud de cita de ${appt.user.name}`;
+
+      return {
+        id: appt.id,
+        title,
+        status: appt.status,
+        timestamp: appt.updatedAt,
+        startAt: appt.startAt,
+        patientName: appt.user.name,
+      };
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        doctor: {
+          id: profile.id,
+          name: profile.user.name,
+          email: profile.user.email,
+          status: profile.status,
+          consultationPrice: profile.consultationPrice,
+        },
+        nextAppointment,
+        stats: {
+          upcomingCount,
+          pendingCount,
+          completedCount,
+          totalPatientsCount,
+          monthlyEarnings,
+        },
+        recentActivity,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+

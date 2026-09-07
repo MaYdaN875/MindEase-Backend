@@ -8,6 +8,7 @@ import {
   getReviewStatus,
   getVerifiedPsychologists,
   getPublicProfileById,
+  getPsychologistDashboard,
 } from '../controllers/psychologistController';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { upload } from '../middlewares/uploadMiddleware';
@@ -29,6 +30,7 @@ router.get('/:id/public', getPublicProfileById as any);
 router.use(authMiddleware as any);
 
 router.get('/me', getProfile as any);
+router.get('/me/dashboard', getPsychologistDashboard as any);
 router.put('/me/profile', updateProfile as any);
 router.post('/me/documents', upload.single('document'), uploadDocument as any);
 router.delete('/me/documents/:documentId', deleteDocument as any);

@@ -1,136 +1,182 @@
-# MindEase Backend - Node.js + Express + Prisma + PostgreSQL
+# ⚙️ MindEase Backend API
 
-Este es el backend de la aplicación **MindEase**, diseñado para gestionar la autenticación de usuarios y profesionales (psicólogos), control de sesiones y perfiles.
-
----
-
-## 🛠️ Tecnologías Utilizadas
-
-- **Runtime**: Node.js (v20+)
-- **Lenguaje**: TypeScript
-- **Framework**: Express.js
-- **ORM**: Prisma ORM
-- **Base de Datos**: PostgreSQL
-- **Seguridad**: JSON Web Tokens (JWT) & BcryptJS (Hashing de contraseñas)
-- **Validación de Datos**: Zod
+API REST y motor central de servicios para la plataforma **MindEase**, desarrollada con **Node.js**, **Express**, **TypeScript**, **Prisma ORM** y base de datos **PostgreSQL**.
 
 ---
 
-## ⚙️ Requisitos Previos
+## 🛠️ Stack Tecnológico
 
-Asegúrate de tener instalado:
-- [Node.js](https://nodejs.org/) (versión 18 o superior)
-- [Docker](https://www.docker.com/) (opcional, si deseas ejecutar PostgreSQL mediante contenedores)
-- Un cliente de base de datos PostgreSQL activo (si prefieres ejecutarlo localmente sin Docker)
-
----
-
-## 🚀 Inicialización y Configuración
-
-Sigue estos pasos para arrancar el backend en tu entorno local.
-
-### Paso 1: Configurar Variables de Entorno
-
-Crea un archivo llamado `.env` en la raíz de la carpeta `MindEase-back/`. Puedes basarte en el archivo `.env.example` provisto:
-
-```env
-PORT=3000
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mindease?schema=public"
-JWT_SECRET="tu-clave-secreta-de-seguridad-cambiar-en-produccion"
-JWT_EXPIRES_IN="7d"
-```
-
-> 💡 **Nota**: Si vas a ejecutar la base de datos dentro de Docker, mantén la configuración por defecto de `DATABASE_URL`.
+* **Entorno de Ejecución:** Node.js (v20+ LTS)
+* **Lenguaje:** TypeScript (v5.4+)
+* **Framework Web:** Express.js (v4.19+)
+* **ORM:** Prisma (v5.12+)
+* **Base de Datos:** PostgreSQL (v15+)
+* **Autenticación y Seguridad:** JSON Web Tokens (JWT) & bcryptjs
+* **Almacenamiento de Archivos:** Multer con almacenamiento persistente local
+* **Contenedores:** Docker & Docker Compose
 
 ---
 
-### Opción A: Inicializar con Docker (Recomendado)
+## 📋 Requisitos Previos
 
-Docker Compose levantará automáticamente tanto la base de datos PostgreSQL como la aplicación Express ya compilada, configurando la red interna entre ambos.
-
-1. **Construir y arrancar contenedores**:
-   ```bash
-   docker-compose up --build
-   ```
-2. **Ejecutar migraciones en la base de datos** (Solo la primera vez):
-   Abre otra pestaña de la terminal y ejecuta:
-   ```bash
-   npx prisma migrate dev --name init
-   ```
-
-La aplicación estará activa en `http://localhost:3000`.
+* **[Node.js](https://nodejs.org/)** (v20.x o superior) y **npm** (v10+)
+* **[Docker Desktop](https://www.docker.com/)** con **Docker Compose** *(Recomendado para base de datos y despliegue rápido)*
+* O **[PostgreSQL](https://www.postgresql.org/)** instalado localmente si no deseas usar Docker.
 
 ---
 
-### Opción B: Inicializar Localmente (Desarrollo)
-
-Si prefieres ejecutar el servidor Node directamente en tu sistema host:
-
-1. **Instalar las dependencias**:
-   ```bash
-   npm install
-   ```
-2. **Levantar tu servidor de PostgreSQL** y verificar que la URL de conexión en tu `.env` sea correcta.
-3. **Ejecutar las migraciones iniciales de base de datos**:
-   ```bash
-   npx prisma migrate dev --name init
-   ```
-4. **Iniciar el servidor en modo desarrollo** (con recarga en vivo):
-   ```bash
-   npm run dev
-   ```
-
-El servidor estará escuchando en `http://localhost:3000`.
-
----
-
-## 📂 Estructura del Código
+## 📁 Estructura del Repositorio
 
 ```text
 MindEase-back/
 ├── prisma/
-│   └── schema.prisma      # Esquema de base de datos (Prisma Schema)
+│   └── schema.prisma         # Modelos de datos PostgreSQL (User, PsychologistProfile, ProfessionalDocument, etc.)
 ├── src/
-│   ├── config/            # Configuraciones (Ej: cliente de Prisma)
-│   ├── controllers/       # Lógica de controladores (Auth, User)
-│   ├── middlewares/       # Filtros y validaciones (JWT Auth, Error handler)
-│   ├── routes/            # Definición de rutas del API
-│   ├── utils/             # Funciones utilitarias (Tokens, Hashing)
-│   ├── app.ts             # Configuración de Middlewares globales de Express
-│   └── server.ts          # Punto de entrada y arranque del servidor
-├── .env.example           # Plantilla de variables de entorno
-├── docker-compose.yml     # Orquestación de servicios PostgreSQL y Node
-└── Dockerfile             # Configuración de empaquetado Docker
+│   ├── controllers/          # Lógica de negocio (adminController, authController, etc.)
+│   ├── middlewares/          # Autenticación JWT, RBAC (roles) y manejo de errores
+│   ├── routes/               # Enrutadores Express (adminRoutes, authRoutes, etc.)
+│   ├── services/             # Servicios de utilidad (token, auditLogger)
+│   ├── types/                # Definiciones de tipos e interfaces TypeScript
+│   └── server.ts             # Punto de entrada de la aplicación Express
+├── storage/                  # Carpeta de almacenamiento físico persistente para PDFs y documentos
+├── docker-compose.yml        # Orquestación de backend (app) y PostgreSQL (db)
+├── Dockerfile                # Imagen multi-stage optimizada para producción
+├── package.json              # Dependencias y scripts del proyecto
+└── tsconfig.json             # Configuración del compilador TypeScript
 ```
 
 ---
 
-## 📡 Endpoints del API
+## 🚀 Guía de Instalación y Compilación
 
-### Rutas de Autenticación (`/api/auth`)
+### Opción 1: Ejecución con Docker Compose (Recomendada)
 
-| Método | Endpoint | Descripción | Cuerpo de la Petición (JSON) |
-| :--- | :--- | :--- | :--- |
-| **POST** | `/api/auth/register` | Registra un usuario o psicólogo. | `{ "name": "Nombre", "email": "email@test.com", "password": "123456", "role": "USER" / "PSYCHOLOGIST" }` |
-| **POST** | `/api/auth/login` | Inicia sesión y devuelve un token JWT. | `{ "email": "email@test.com", "password": "123456" }` |
-| **POST** | `/api/auth/forgot-password` | Genera un token de recuperación. | `{ "email": "email@test.com" }` |
-| **POST** | `/api/auth/reset-password` | Restablece contraseña usando el token. | `{ "token": "hash-recuperado", "password": "nueva-contrasena" }` |
+Docker levantará automáticamente la base de datos PostgreSQL (`mindease-db`) en el puerto `5432` y la API (`mindease-app`) en el puerto `3000`, aplicando las migraciones de Prisma al iniciar.
 
-### Rutas de Usuario (`/api/users`) - *Requieren cabecera `Authorization: Bearer <JWT>`*
+1. Abre tu terminal en este directorio (`MindEase-back`):
+   ```bash
+   cd MindEase-back
+   ```
 
-| Método | Endpoint | Descripción | Cabecera Requerida |
-| :--- | :--- | :--- | :--- |
-| **GET** | `/api/users/profile` | Obtiene el perfil del usuario autenticado. | `Authorization: Bearer <TOKEN>` |
-| **PUT** | `/api/users/profile` | Actualiza datos de perfil (nombre/email). | `Authorization: Bearer <TOKEN>` |
+2. Construye e inicia los contenedores en segundo plano:
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. Verifica el estado de los contenedores:
+   ```bash
+   docker compose ps
+   ```
+
+4. Para ver los registros y logs en tiempo real:
+   ```bash
+   docker compose logs -f app
+   ```
+
+5. Para detener los contenedores:
+   ```bash
+   docker compose down
+   ```
 
 ---
 
-## 🧪 Pruebas de Integración
+### Opción 2: Ejecución Local en tu Sistema Operativo
 
-Hemos creado un script Node automatizado para verificar que todas las llamadas del API funcionen.
-Con el servidor corriendo en el puerto `3000`, puedes ejecutar en tu terminal:
+Si prefieres ejecutar el servidor Node.js directamente en tu máquina:
 
-```bash
-node path/to/test_api.js
-```
-*(Puedes encontrar la ruta del script de pruebas en las notificaciones del chat del asistente de Gemini).*
+1. **Instalar dependencias:**
+   ```bash
+   npm install
+   ```
+
+2. **Configurar variables de entorno:**
+   Crea un archivo `.env` en la raíz de `MindEase-back/` con el siguiente contenido:
+   ```env
+   PORT=3000
+   DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mindease?schema=public"
+   JWT_SECRET="super-secret-mindease-jwt-key-change-in-production"
+   JWT_EXPIRES_IN="7d"
+   ```
+
+3. **Sincronizar base de datos con Prisma:**
+   ```bash
+   # Genera el cliente tipado de Prisma
+   npx prisma generate
+
+   # Aplica el esquema a PostgreSQL
+   npx prisma db push
+   ```
+
+4. **Compilar e Iniciar:**
+   ```bash
+   # Modo desarrollo (con recarga en vivo)
+   npm run dev
+
+   # Compilar para producción (TypeScript -> JavaScript en /dist)
+   npm run build
+
+   # Iniciar el servidor compilado
+   npm start
+   ```
+
+---
+
+## 📡 Catálogo de Endpoints Principales
+
+Todos los endpoints tienen como base: `http://localhost:3000/api`
+
+### 🔑 Autenticación (`/api/auth`)
+* `POST /auth/register` - Registro de nuevos usuarios o psicólogos.
+* `POST /auth/login` - Inicio de sesión y emisión de JWT.
+
+### 🛡️ Panel Administrativo y Revisión Clínica (`/api/admin`) *(Requiere JWT)*
+* `GET /admin/dashboard/stats` - Métricas de usuarios, tasa de aprobación y top de especialidades.
+* `GET /admin/psychologist-applications` - Listado de solicitudes de verificación.
+* `GET /admin/psychologist-applications/:id` - Expediente clínico completo (Dossier).
+* `POST /admin/psychologist-applications/:id/approve` - Aprobar expediente clínico.
+* `POST /admin/psychologist-applications/:id/request-changes` - Solicitar correcciones con observaciones.
+* `POST /admin/psychologist-applications/:id/reject` - Rechazar solicitud de verificación.
+* `GET /admin/documents/:id/download` - Descarga segura de PDFs/imágenes del storage.
+* `PUT /admin/documents/:id/status` - Validación individual de documento (`APPROVED`, `REJECTED`, `PENDING`) y asignación de `expiresAt`.
+
+### 👥 Gestión de Usuarios y Roles (`/api/admin`)
+* `GET /admin/users` - Lista de usuarios con roles, perfil clínico y consentimientos.
+* `GET /admin/roles` - Lista de roles del sistema (`ADMIN`, `REVISOR`, `USER`, `PSYCHOLOGIST`, `SUPERADMIN`).
+* `PUT /admin/users/:userId/roles` - Asignación dinámica de roles en vivo.
+* `PUT /admin/users/:userId/status` - Suspensión y reactivación de cuentas.
+
+### 🏷️ Catálogo Dinámico de Especialidades (`/api/admin/specialties`)
+* `GET /admin/specialties` - Lista de especialidades con recuento de psicólogos asociados.
+* `POST /admin/specialties` - Crear nueva especialidad.
+* `PUT /admin/specialties/:id` - Actualizar nombre de especialidad.
+* `DELETE /admin/specialties/:id` - Eliminar especialidad (con protección de integridad).
+
+### 🔒 Seguridad, Auditoría y Cumplimiento (`/api/admin`)
+* `GET /admin/audit-logs` - Registro forense de acciones administrativas con filtros.
+* `GET /admin/audit-logs/export-csv` - Descarga de reporte `.csv` para cumplimiento normativo (ISO/HIPAA/GDPR).
+
+### 🔔 Notificaciones y Avisos (`/api/admin/notifications`)
+* `GET /admin/notifications` - Lista de notificaciones recibidas y conteo no leído.
+* `PUT /admin/notifications/:id/read` - Marcar notificación como leída.
+* `PUT /admin/notifications/mark-all-read` - Marcar todas como leídas.
+* `POST /admin/notifications/broadcast` - Emitir comunicado general a todos los usuarios.
+
+---
+
+## 🧰 Comandos de Mantenimiento
+
+| Comando | Descripción |
+| :--- | :--- |
+| `npm run prisma:studio` | Abre la interfaz visual de base de datos de Prisma en `http://localhost:5555`. |
+| `npx tsc --noEmit` | Valida errores de tipos TypeScript sin generar archivos. |
+| `npm run build` | Compila todo el código TypeScript a la carpeta `dist/`. |
+| `docker compose logs -f app` | Monitorea los logs del backend en tiempo real. |
+
+---
+
+## 🔒 Persistencia de Archivos
+
+Los documentos privados subidos por los profesionales (cédulas, títulos, identificaciones) se almacenan físicamente en:
+`MindEase-back/storage/private_documents/`
+
+El archivo `docker-compose.yml` mapea este directorio mediante un volumen persistente (`./storage:/usr/src/app/storage`), garantizando que ningún archivo se pierda al reiniciar o reconstruir los contenedores.
