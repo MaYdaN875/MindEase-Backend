@@ -6,12 +6,26 @@ import {
   deleteDocument,
   submitForReview,
   getReviewStatus,
+  getVerifiedPsychologists,
+  getPublicProfileById,
 } from '../controllers/psychologistController';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { upload } from '../middlewares/uploadMiddleware';
 
+import {
+  getMyAvailability,
+  updateMyAvailability,
+  getAvailableSlots,
+} from '../controllers/availabilityController';
+
 const router = Router();
 
+// Public routes (Directory, Available slots calculation, Public profile)
+router.get('/', getVerifiedPsychologists as any);
+router.get('/:psychologistId/available-slots', getAvailableSlots as any);
+router.get('/:id/public', getPublicProfileById as any);
+
+// Protected routes requiring authentication
 router.use(authMiddleware as any);
 
 router.get('/me', getProfile as any);
@@ -20,5 +34,9 @@ router.post('/me/documents', upload.single('document'), uploadDocument as any);
 router.delete('/me/documents/:documentId', deleteDocument as any);
 router.post('/me/submit-review', submitForReview as any);
 router.get('/me/review-status', getReviewStatus as any);
+
+// Availability & Scheduling (for logged in psychologist)
+router.get('/me/availability', getMyAvailability as any);
+router.put('/me/availability', updateMyAvailability as any);
 
 export default router;

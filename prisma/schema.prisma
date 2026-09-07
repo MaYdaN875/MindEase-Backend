@@ -7,13 +7,20 @@ generator client {
   provider = "prisma-client-js"
 }
 
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
 model User {
   id                  String                      @id @default(uuid())
   email               String                      @unique
   passwordHash        String
   name                String
   phone               String?
-  status              String                      @default("ACTIVE")
+  status              UserStatus                  @default(ACTIVE)
   resetPasswordToken  String?
   resetPasswordExp    DateTime?
   createdAt           DateTime                    @default(now())
@@ -25,6 +32,7 @@ model User {
   notifications       Notification[]
   verificationReviews VerificationReview[]        @relation("RevisorReviews")
   changedStatusLogs   VerificationStatusHistory[] @relation("StatusChanges")
+  patientAppointments Appointment[]               @relation("PatientAppointments")
 }
 
 model Role {
@@ -62,7 +70,7 @@ model PsychologistProfile {
   academicBackground   String?
   experience           String?
   consultationPrice    Float?
-  availability         Json? // Stores calendar availability structure
+  availability         Json? // Stores calendar availability structure (legacy/extra metadata)
   languages            String?
   location             String?
   licenseNumber        String?
@@ -73,6 +81,8 @@ model PsychologistProfile {
   documents            ProfessionalDocument[]
   statusHistory        VerificationStatusHistory[]
   verificationRequests VerificationRequest[]
+  availabilities       PsychologistAvailability[]
+  appointments         Appointment[]
 }
 
 model Specialty {
@@ -172,3 +182,76 @@ model Notification {
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
 }
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+model PsychologistAvailability {
+  id             String              @id @default(uuid())
+  psychologistId String
+  psychologist   PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  dayOfWeek      DayOfWeek
+  startTime      String              // e.g. "09:00" (HH:mm format)
+  endTime        String              // e.g. "14:00" (HH:mm format)
+  slotDuration   Int                 @default(50) // consultation duration in minutes
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([psychologistId, dayOfWeek])
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+model Appointment {
+  id                 String              @id @default(uuid())
+  psychologistId     String
+  psychologist       PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User                @relation("PatientAppointments", fields: [userId], references: [id], onDelete: Cascade)
+  startAt            DateTime
+  endAt              DateTime
+  status             AppointmentStatus   @default(PENDING)
+  price              Float
+  cancellationReason String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  consultation       Consultation?
+
+  @@index([psychologistId, startAt])
+  @@index([userId, startAt])
+}
+
+enum ConsultationStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model Consultation {
+  id            String             @id @default(uuid())
+  appointmentId String             @unique
+  appointment   Appointment        @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  status        ConsultationStatus @default(SCHEDULED)
+  startedAt     DateTime?
+  endedAt       DateTime?
+  clinicalNotes String?
+  meetingUrl    String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+}
+

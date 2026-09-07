@@ -337,3 +337,119 @@ export const getReviewStatus = async (
     next(error);
   }
 };
+
+export const getVerifiedPsychologists = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { specialty, search } = req.query;
+
+    const whereClause: any = {
+      status: 'VERIFICADO',
+      user: {
+        status: 'ACTIVE',
+      },
+    };
+
+    if (search && typeof search === 'string') {
+      whereClause.OR = [
+        { user: { name: { contains: search, mode: 'insensitive' } } },
+        { description: { contains: search, mode: 'insensitive' } },
+        { academicBackground: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    if (specialty && typeof specialty === 'string') {
+      whereClause.specialties = {
+        some: {
+          specialty: {
+            name: { contains: specialty, mode: 'insensitive' },
+          },
+        },
+      };
+    }
+
+    const psychologists = await prisma.psychologistProfile.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        specialties: {
+          include: {
+            specialty: true,
+          },
+        },
+        availabilities: {
+          where: { isActive: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        psychologists,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPublicProfileById = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    const profile = await prisma.psychologistProfile.findFirst({
+      where: {
+        OR: [{ id }, { userId: id }],
+        status: 'VERIFICADO',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        specialties: {
+          include: {
+            specialty: true,
+          },
+        },
+        availabilities: {
+          where: { isActive: true },
+        },
+      },
+    });
+
+    if (!profile) {
+      throw new AppError('Psicólogo no encontrado o no verificado', 404);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        profile,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
