@@ -19,6 +19,12 @@ import {
   getAvailableSlots,
 } from '../controllers/availabilityController';
 
+import {
+  getMyEarnings,
+  requestPayout,
+  getMyPayouts,
+} from '../controllers/earningsController';
+
 const router = Router();
 
 // Public routes (Directory, Available slots calculation, Public profile)
@@ -40,5 +46,10 @@ router.get('/me/review-status', getReviewStatus as any);
 // Availability & Scheduling (for logged in psychologist)
 router.get('/me/availability', getMyAvailability as any);
 router.put('/me/availability', updateMyAvailability as any);
+
+// Financials, Earnings & Payouts
+router.get('/me/earnings', getMyEarnings as any);
+router.post('/me/payouts', requestPayout as any);
+router.get('/me/payouts', getMyPayouts as any);
 
 export default router;

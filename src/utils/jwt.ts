@@ -1,6 +1,10 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-mindease';
+const signingSecret = (): string => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET debe configurarse antes de iniciar el servicio');
+  return secret;
+};
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
 export interface TokenPayload {
@@ -9,11 +13,13 @@ export interface TokenPayload {
 }
 
 export const generateToken = (payload: TokenPayload): string => {
-  return jwt.sign(payload, JWT_SECRET, {
+  return jwt.sign(payload, signingSecret(), {
     expiresIn: JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'],
   });
 };
 
 export const verifyToken = (token: string): TokenPayload => {
-  return jwt.verify(token, JWT_SECRET) as TokenPayload;
+  const decoded = jwt.verify(token, signingSecret(), { algorithms: ['HS256'] });
+  if (typeof decoded === 'string' || typeof decoded.userId !== 'string') throw new jwt.JsonWebTokenError('Invalid token payload');
+  return decoded as TokenPayload;
 };

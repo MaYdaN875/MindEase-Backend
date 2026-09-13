@@ -9,7 +9,7 @@ export const checkRole = (allowedRoles: string[]) => {
     }
 
     const { roles } = req.user;
-    const hasRole = roles.some((role) => allowedRoles.includes(role));
+    const hasRole = roles.includes('SUPERADMIN') || roles.some((role) => allowedRoles.includes(role));
 
     if (!hasRole) {
       return next(new AppError('Forbidden: Access is denied', 403));

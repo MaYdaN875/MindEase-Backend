@@ -33,6 +33,7 @@ model User {
   verificationReviews VerificationReview[]        @relation("RevisorReviews")
   changedStatusLogs   VerificationStatusHistory[] @relation("StatusChanges")
   patientAppointments Appointment[]               @relation("PatientAppointments")
+  payments            Payment[]                   @relation("PatientPayments")
 }
 
 model Role {
@@ -75,14 +76,17 @@ model PsychologistProfile {
   location             String?
   licenseNumber        String?
   status               PsychologistStatus          @default(REGISTRO_INCOMPLETO)
+  autoConfirmAppointments Boolean                  @default(false)
   createdAt            DateTime                    @default(now())
-  updatedAt            DateTime                    @updatedAt
+  updatedAt            DateTime            @updatedAt
   specialties          PsychologistSpecialty[]
   documents            ProfessionalDocument[]
   statusHistory        VerificationStatusHistory[]
   verificationRequests VerificationRequest[]
   availabilities       PsychologistAvailability[]
   appointments         Appointment[]
+  payments             Payment[]                   @relation("PsychologistPayments")
+  payoutRequests       PayoutRequest[]
 }
 
 model Specialty {
@@ -174,13 +178,17 @@ model UserConsent {
 }
 
 model Notification {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title     String
-  content   String
-  isRead    Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  content     String
+  type        String   @default("SYSTEM") // APPOINTMENT_REQUEST, APPOINTMENT_CONFIRMED, APPOINTMENT_CANCELLED, CONSULTATION_STARTED, SYSTEM
+  referenceId String?
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([userId, isRead])
 }
 
 enum DayOfWeek {
@@ -226,10 +234,12 @@ model Appointment {
   endAt              DateTime
   status             AppointmentStatus   @default(PENDING)
   price              Float
+  currency           String              @default("MXN")
   cancellationReason String?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   consultation       Consultation?
+  payment            Payment?
 
   @@index([psychologistId, startAt])
   @@index([userId, startAt])
@@ -253,5 +263,72 @@ model Consultation {
   meetingUrl    String?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentMethodType {
+  CREDIT_CARD
+  DEBIT_CARD
+  TRANSFER
+  WALLET
+}
+
+enum PayoutStatus {
+  REQUESTED
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+model Payment {
+  id             String            @id @default(uuid())
+  appointmentId  String            @unique
+  appointment    Appointment       @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  patientId      String
+  patient        User              @relation("PatientPayments", fields: [patientId], references: [id], onDelete: Cascade)
+  psychologistId String
+  psychologist   PsychologistProfile @relation("PsychologistPayments", fields: [psychologistId], references: [id], onDelete: Cascade)
+  amount         Float
+  currency       String            @default("MXN")
+  platformFee    Float
+  netAmount      Float
+  status         PaymentStatus     @default(PENDING)
+  paymentMethod  PaymentMethodType @default(CREDIT_CARD)
+  cardLast4      String?
+  cardBrand      String?
+  transactionId  String?
+  idempotencyKey String?           @unique
+  receiptUrl     String?
+  refundReason   String?
+  refundedAt     DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([patientId, createdAt])
+  @@index([psychologistId, createdAt])
+}
+
+model PayoutRequest {
+  id             String              @id @default(uuid())
+  psychologistId String
+  psychologist   PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
+  amount         Float
+  currency       String              @default("MXN")
+  status         PayoutStatus        @default(REQUESTED)
+  bankName       String
+  accountClabe   String
+  requestedAt    DateTime            @default(now())
+  processedAt    DateTime?
+  notes          String?
+
+  @@index([psychologistId, status])
 }
 

@@ -142,6 +142,8 @@ export const login = async (
       throw new AppError('Incorrect email or password', 401);
     }
 
+    if (user.status !== 'ACTIVE') throw new AppError('La cuenta no se encuentra activa', 403);
+
     const rolesList = user.userRoles.map((ur) => ur.role.name);
     const token = generateToken({ userId: user.id, roles: rolesList });
 

@@ -1,318 +1,146 @@
 import { Response, NextFunction } from 'express';
+import { Prisma } from '@prisma/client';
+import { z } from 'zod';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import prisma from '../config/db';
-import { AppointmentStatus, ConsultationStatus } from '@prisma/client';
+import { sendNotification } from '../services/notificationService';
+import { appointmentView, assertAppointmentTransition, requireProfessional, serializable } from '../services/clinicalPolicy';
+import { localDate, scheduleTimeZone, slotsForDate } from '../services/scheduling';
+import { processAppointmentRefund } from '../services/refundPolicy';
 
-export const createAppointment = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+const details = {
+  psychologist: { include: { user: { select: { id: true, name: true } }, specialties: { include: { specialty: true } } } },
+  user: { select: { id: true, name: true, email: true, phone: true } },
+  consultation: true,
+} satisfies Prisma.AppointmentInclude;
+const bookingSchema = z.object({
+  psychologistId: z.string().uuid(), startAt: z.string().datetime({ offset: true }), endAt: z.string().datetime({ offset: true }),
+});
+const statusSchema = z.object({
+  status: z.enum(['PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED', 'NO_SHOW']),
+  cancellationReason: z.string().trim().max(1000).optional(),
+});
+const isAdministrator = (roles: string[]) => roles.some(r => ['ADMIN', 'SUPERADMIN'].includes(r));
+
+export const createAppointment = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const patientUserId = req.user!.userId;
-    const { psychologistId, startAt, endAt } = req.body;
-
-    if (!psychologistId || !startAt || !endAt) {
-      return next(new AppError('psychologistId, startAt y endAt son requeridos', 400));
-    }
-
-    const startDate = new Date(startAt);
-    const endDate = new Date(endAt);
-
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      return next(new AppError('Fechas inválidas provistas', 400));
-    }
-
-    if (startDate >= endDate) {
-      return next(new AppError('startAt debe ser anterior a endAt', 400));
-    }
-
-    if (startDate.getTime() < Date.now()) {
-      return next(new AppError('No es posible agendar citas en fechas u horas pasadas', 400));
-    }
-
-    // Verify psychologist exists and is VERIFICADO
-    const psychologist = await prisma.psychologistProfile.findUnique({
-      where: { id: psychologistId },
-      include: { user: true },
-    });
-
-    if (!psychologist) {
-      return next(new AppError('Psicólogo no encontrado', 404));
-    }
-
-    if (psychologist.status !== 'VERIFICADO') {
-      return next(new AppError('Este profesional aún no se encuentra verificado para consultas', 400));
-    }
-
-    if (psychologist.user.status !== 'ACTIVE') {
-      return next(new AppError('La cuenta del profesional no se encuentra activa', 400));
-    }
-
-    if (psychologist.userId === patientUserId) {
-      return next(new AppError('No puedes agendar una cita contigo mismo', 400));
-    }
-
-    // Check collision / overlapping appointments for this psychologist
-    const psychologistCollision = await prisma.appointment.findFirst({
-      where: {
-        psychologistId,
-        status: { notIn: [AppointmentStatus.CANCELLED] },
-        OR: [
-          {
-            startAt: { lt: endDate },
-            endAt: { gt: startDate },
-          },
-        ],
-      },
-    });
-
-    if (psychologistCollision) {
-      return next(new AppError('El psicólogo ya tiene una cita reservada en ese horario', 409));
-    }
-
-    // Check collision for the patient
-    const patientCollision = await prisma.appointment.findFirst({
-      where: {
-        userId: patientUserId,
-        status: { notIn: [AppointmentStatus.CANCELLED] },
-        OR: [
-          {
-            startAt: { lt: endDate },
-            endAt: { gt: startDate },
-          },
-        ],
-      },
-    });
-
-    if (patientCollision) {
-      return next(new AppError('Ya tienes otra cita agendada en ese mismo horario', 409));
-    }
-
-    const price = psychologist.consultationPrice || 0;
-
-    // Create Appointment and linked Consultation in a single transaction
-    const appointment = await prisma.$transaction(async (tx) => {
-      const appt = await tx.appointment.create({
+    const parsed = bookingSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError('Se requiere un profesional y fechas ISO con zona horaria válidos', 400);
+    const { psychologistId, startAt, endAt } = parsed.data;
+    const userId = req.user!.userId;
+    const startDate = new Date(startAt), endDate = new Date(endAt);
+    if (startDate >= endDate || startDate.getTime() <= Date.now()) throw new AppError('La cita debe tener duración positiva y comenzar en el futuro', 400);
+    const appointment = await serializable(async tx => {
+      const patient = await tx.user.findUnique({ where: { id: userId } });
+      if (!patient || patient.status !== 'ACTIVE') throw new AppError('La cuenta no se encuentra activa', 403);
+      const psychologist = await requireProfessional(tx, psychologistId);
+      if (psychologist.userId === userId) throw new AppError('No puedes agendar una cita contigo mismo', 400);
+      const availability = await tx.psychologistAvailability.findMany({ where: { psychologistId, isActive: true } });
+      const { slots } = slotsForDate(localDate(startDate), availability);
+      if (!slots.some(s => s.startAt === startDate.toISOString() && s.endAt === endDate.toISOString())) {
+        throw new AppError('El horario o la duración no corresponden a la disponibilidad publicada', 400);
+      }
+      const collision = await tx.appointment.findFirst({
+        where: {
+          OR: [{ psychologistId }, { userId }], status: { in: ['PENDING', 'CONFIRMED'] },
+          startAt: { lt: endDate }, endAt: { gt: startDate },
+        },
+      });
+      if (collision) throw new AppError('El paciente o el profesional ya tiene una cita en ese horario', 409);
+      const price = psychologist.consultationPrice ?? 0;
+      const requiresPayment = price > 0;
+      return tx.appointment.create({
         data: {
-          psychologistId,
-          userId: patientUserId,
-          startAt: startDate,
-          endAt: endDate,
-          status: AppointmentStatus.CONFIRMED,
+          psychologistId, userId, startAt: startDate, endAt: endDate,
+          status: requiresPayment ? 'PENDING' : (psychologist.autoConfirmAppointments ? 'CONFIRMED' : 'PENDING'),
           price,
-          consultation: {
-            create: {
-              status: ConsultationStatus.SCHEDULED,
-            },
-          },
-        },
-        include: {
-          psychologist: {
-            include: {
-              user: {
-                select: { id: true, name: true, email: true, phone: true },
-              },
-            },
-          },
-          user: {
-            select: { id: true, name: true, email: true, phone: true },
-          },
-          consultation: true,
-        },
+          consultation: { create: { status: 'SCHEDULED' } },
+        }, include: details,
       });
-
-      return appt;
     });
-
-    res.status(201).json({
-      status: 'success',
-      message: 'Cita reservada exitosamente',
-      data: {
-        appointment,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
+    const confirmed = appointment.status === 'CONFIRMED';
+    const formatted = startDate.toLocaleString('es-MX', { timeZone: scheduleTimeZone() });
+    if (confirmed) {
+      await Promise.all([
+        sendNotification({ userId: appointment.psychologist.userId, title: 'Nueva cita confirmada', content: appointment.user.name + ' ha reservado el ' + formatted + '.', type: 'APPOINTMENT_CONFIRMED', referenceId: appointment.id }),
+        sendNotification({ userId, title: 'Cita confirmada', content: 'Tu cita está confirmada.', type: 'APPOINTMENT_CONFIRMED', referenceId: appointment.id }),
+      ]);
+    } else if (appointment.price <= 0) {
+      await Promise.all([
+        sendNotification({ userId: appointment.psychologist.userId, title: 'Nueva solicitud de cita', content: appointment.user.name + ' ha solicitado el ' + formatted + '.', type: 'APPOINTMENT_REQUEST', referenceId: appointment.id }),
+        sendNotification({ userId, title: 'Solicitud enviada', content: 'Tu solicitud está pendiente de confirmación por el profesional.', type: 'APPOINTMENT_REQUEST', referenceId: appointment.id }),
+      ]);
+    }
+    res.status(201).json({ status: 'success', message: confirmed ? 'Cita confirmada' : 'Solicitud de cita enviada', data: { appointment: appointmentView(appointment, userId) } });
+  } catch (error) { next(error); }
 };
 
-export const getMyAppointments = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const getMyAppointments = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { status, as } = req.query; // as: 'patient' | 'psychologist'
-
-    let whereClause: any = {};
-
-    if (status && Object.values(AppointmentStatus).includes(status as AppointmentStatus)) {
-      whereClause.status = status as AppointmentStatus;
+    const { status, as } = req.query;
+    const where: Prisma.AppointmentWhereInput = {};
+    if (status !== undefined) {
+      const parsed = statusSchema.shape.status.safeParse(status);
+      if (!parsed.success) throw new AppError('Estado de cita inválido', 400);
+      where.status = parsed.data;
     }
-
+    if (as !== undefined && as !== 'patient' && as !== 'psychologist') throw new AppError('Tipo de agenda inválido', 400);
     if (as === 'psychologist') {
-      const profile = await prisma.psychologistProfile.findUnique({
-        where: { userId },
-      });
-      if (!profile) {
-        return next(new AppError('No posees perfil de psicólogo', 404));
-      }
-      whereClause.psychologistId = profile.id;
-    } else {
-      // By default or as patient
-      whereClause.userId = userId;
-    }
-
-    const appointments = await prisma.appointment.findMany({
-      where: whereClause,
-      orderBy: { startAt: 'desc' },
-      include: {
-        psychologist: {
-          include: {
-            user: {
-              select: { id: true, name: true, email: true, phone: true },
-            },
-            specialties: {
-              include: { specialty: true },
-            },
-          },
-        },
-        user: {
-          select: { id: true, name: true, email: true, phone: true },
-        },
-        consultation: true,
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      data: {
-        appointments,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
+      const profile = await prisma.psychologistProfile.findUnique({ where: { userId } });
+      if (!profile) throw new AppError('No posees perfil de psicólogo', 404);
+      where.psychologistId = profile.id;
+    } else { where.userId = userId; }
+    const appointments = await prisma.appointment.findMany({ where, orderBy: { startAt: 'desc' }, include: details });
+    res.status(200).json({ status: 'success', data: { appointments: appointments.map(a => appointmentView(a, userId)) } });
+  } catch (error) { next(error); }
 };
 
-export const getAppointmentById = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const getAppointmentById = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { id } = req.params;
-
-    const appointment = await prisma.appointment.findUnique({
-      where: { id },
-      include: {
-        psychologist: {
-          include: {
-            user: {
-              select: { id: true, name: true, email: true, phone: true },
-            },
-          },
-        },
-        user: {
-          select: { id: true, name: true, email: true, phone: true },
-        },
-        consultation: true,
-      },
-    });
-
-    if (!appointment) {
-      return next(new AppError('Cita no encontrada', 404));
-    }
-
-    const isPatient = appointment.userId === userId;
-    const isPsychologist = appointment.psychologist.userId === userId;
-    const isAdmin = req.user!.roles.includes('ADMIN');
-
-    if (!isPatient && !isPsychologist && !isAdmin) {
-      return next(new AppError('No tienes permisos para ver esta cita', 403));
-    }
-
-    res.status(200).json({
-      status: 'success',
-      data: {
-        appointment,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
+    const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id }, include: details });
+    if (!appointment) throw new AppError('Cita no encontrada', 404);
+    if (appointment.userId !== userId && appointment.psychologist.userId !== userId && !isAdministrator(req.user!.roles)) throw new AppError('No tienes permisos para ver esta cita', 403);
+    res.status(200).json({ status: 'success', data: { appointment: appointmentView(appointment, userId) } });
+  } catch (error) { next(error); }
 };
 
-export const updateAppointmentStatus = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const updateAppointmentStatus = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
+    const parsed = statusSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError('Estado o motivo de cancelación inválidos', 400);
+    const { status, cancellationReason } = parsed.data;
     const userId = req.user!.userId;
-    const { id } = req.params;
-    const { status, cancellationReason } = req.body;
-
-    if (!status || !Object.values(AppointmentStatus).includes(status)) {
-      return next(new AppError('Estado de cita inválido', 400));
-    }
-
-    const appointment = await prisma.appointment.findUnique({
-      where: { id },
-      include: {
-        psychologist: true,
-      },
-    });
-
-    if (!appointment) {
-      return next(new AppError('Cita no encontrada', 404));
-    }
-
-    const isPatient = appointment.userId === userId;
-    const isPsychologist = appointment.psychologist.userId === userId;
-    const isAdmin = req.user!.roles.includes('ADMIN');
-
-    if (!isPatient && !isPsychologist && !isAdmin) {
-      return next(new AppError('No tienes permisos para modificar esta cita', 403));
-    }
-
-    // Update appointment and sync consultation status
-    const updated = await prisma.$transaction(async (tx) => {
-      const appt = await tx.appointment.update({
-        where: { id },
-        data: {
-          status,
-          cancellationReason: status === AppointmentStatus.CANCELLED ? cancellationReason : appointment.cancellationReason,
-        },
-      });
-
-      if (status === AppointmentStatus.CANCELLED) {
-        await tx.consultation.updateMany({
-          where: { appointmentId: id },
-          data: { status: ConsultationStatus.CANCELLED },
-        });
-      } else if (status === AppointmentStatus.COMPLETED) {
-        await tx.consultation.updateMany({
-          where: { appointmentId: id },
-          data: { status: ConsultationStatus.COMPLETED, endedAt: new Date() },
-        });
+    const admin = isAdministrator(req.user!.roles);
+    const { appointment, updated } = await serializable(async tx => {
+      const appointment = await tx.appointment.findUnique({ where: { id: req.params.id }, include: details });
+      if (!appointment) throw new AppError('Cita no encontrada', 404);
+      const professional = appointment.psychologist.userId === userId;
+      if (appointment.userId !== userId && !professional && !admin) throw new AppError('No tienes permisos para modificar esta cita', 403);
+      assertAppointmentTransition(appointment.status, status, professional, admin, appointment.consultation?.status, appointment.endAt);
+      if (status === 'CONFIRMED') {
+        await requireProfessional(tx, appointment.psychologistId);
+        if (appointment.startAt.getTime() <= Date.now()) throw new AppError('No se pueden confirmar solicitudes vencidas', 409);
       }
-
-      return appt;
+      const updated = await tx.appointment.update({ where: { id: appointment.id }, data: { status, ...(status === 'CANCELLED' && { cancellationReason }) } });
+      if (status === 'CANCELLED' || status === 'NO_SHOW') {
+        await tx.consultation.updateMany({ where: { appointmentId: appointment.id }, data: { status: 'CANCELLED' } });
+      }
+      if (status === 'CANCELLED') {
+        await processAppointmentRefund(tx, appointment.id, cancellationReason);
+      }
+      return { appointment, updated };
     });
-
-    res.status(200).json({
-      status: 'success',
-      message: `Cita actualizada al estado ${status}`,
-      data: {
-        appointment: updated,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
+    if (status === 'CONFIRMED' || status === 'CANCELLED') {
+      await sendNotification({
+        userId: userId === appointment.userId ? appointment.psychologist.userId : appointment.userId,
+        title: status === 'CONFIRMED' ? 'Cita confirmada' : 'Cita cancelada',
+        content: status === 'CONFIRMED' ? 'El profesional confirmó tu cita.' : 'La cita fue cancelada.' + (cancellationReason ? ' Motivo: ' + cancellationReason : ''),
+        type: status === 'CONFIRMED' ? 'APPOINTMENT_CONFIRMED' : 'APPOINTMENT_CANCELLED', referenceId: appointment.id,
+      });
+    }
+    res.status(200).json({ status: 'success', message: 'Cita actualizada a ' + status, data: { appointment: updated } });
+  } catch (error) { next(error); }
 };

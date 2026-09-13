@@ -5,7 +5,9 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "npx prisma db push --accept-data-loss && node dist/server.js",
+    "start": "node dist/server.js",
+    "test": "node --test -r ts-node/register tests/policy.test.js",
+    "test:integration": "node -r ts-node/register tests/integration.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

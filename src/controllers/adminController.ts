@@ -5,6 +5,9 @@ import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { uploadDir } from '../middlewares/uploadMiddleware';
+import { UserStatus } from '@prisma/client';
+import { serializable } from '../services/clinicalPolicy';
+import { reviewApplication } from '../services/verification';
 
 const createAuditLog = async (userId: string | null, action: string, details: any): Promise<void> => {
   try {
@@ -172,312 +175,32 @@ export const getApplication = async (
   }
 };
 
-export const assignRevisor = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const assignRevisor = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { applicationId } = req.params;
-    const adminId = req.user?.userId;
-
-    const request = await prisma.verificationRequest.findUnique({
-      where: { id: applicationId },
-    });
-
-    if (!request) {
-      throw new AppError('Verification request not found', 404);
-    }
-
-    await prisma.verificationRequest.update({
-      where: { id: applicationId },
-      data: {
-        revisorId: adminId,
-        status: 'IN_PROGRESS',
-      },
-    });
-
-    // Log status transition to EN_REVISION on psychologist profile
-    await prisma.psychologistProfile.update({
-      where: { id: request.psychologistId },
-      data: { status: 'EN_REVISION' },
-    });
-
-    await prisma.verificationStatusHistory.create({
-      data: {
-        psychologistId: request.psychologistId,
-        fromStatus: 'PENDIENTE_REVISION',
-        toStatus: 'EN_REVISION',
-        changedById: adminId!,
-        comment: 'Asignado a revisor administrativo',
-      },
-    });
-
-    await createAuditLog(adminId!, 'ASSIGN_REVISOR', { applicationId, revisorId: adminId });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Revisor asignado con éxito. Estado: EN_REVISION',
-    });
-  } catch (error) {
-    next(error);
-  }
+    await reviewApplication(req.params.applicationId, req.user!.userId, 'ASSIGN', req.body?.notes);
+    res.status(200).json({ status: 'success', message: 'Solicitud actualizada correctamente' });
+  } catch (error) { next(error); }
 };
 
-export const approveApplication = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const approveApplication = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { applicationId } = req.params;
-    const adminId = req.user?.userId;
-
-    const request = await prisma.verificationRequest.findUnique({
-      where: { id: applicationId },
-      include: { psychologist: true },
-    });
-
-    if (!request) {
-      throw new AppError('Verification request not found', 404);
-    }
-
-    const psychologist = request.psychologist;
-
-    // 1. Update psychologist status to VERIFICADO
-    const oldStatus = psychologist.status;
-    await prisma.psychologistProfile.update({
-      where: { id: psychologist.id },
-      data: { status: 'VERIFICADO' },
-    });
-
-    // 2. Map role role to PSYCHOLOGIST_VERIFIED and remove PSYCHOLOGIST_APPLICANT
-    const roleApplicant = await prisma.role.findUnique({ where: { name: 'PSYCHOLOGIST_APPLICANT' } });
-    const roleVerified = await prisma.role.findUnique({ where: { name: 'PSYCHOLOGIST_VERIFIED' } });
-
-    if (roleApplicant && roleVerified) {
-      // Remove applicant relationship
-      await prisma.userRole.delete({
-        where: {
-          userId_roleId: {
-            userId: psychologist.userId,
-            roleId: roleApplicant.id,
-          },
-        },
-      });
-
-      // Add verified role relationship
-      await prisma.userRole.create({
-        data: {
-          userId: psychologist.userId,
-          roleId: roleVerified.id,
-        },
-      });
-    }
-
-    // 3. Log history
-    await prisma.verificationStatusHistory.create({
-      data: {
-        psychologistId: psychologist.id,
-        fromStatus: oldStatus,
-        toStatus: 'VERIFICADO',
-        changedById: adminId!,
-        comment: 'Solicitud aprobada e incorporación como profesional certificado',
-      },
-    });
-
-    // 4. Create Review and close request
-    await prisma.verificationReview.create({
-      data: {
-        requestId: applicationId,
-        revisorId: adminId!,
-        decision: 'APPROVE',
-        notes: 'Documentación y cédula validadas correctamente',
-      },
-    });
-
-    await prisma.verificationRequest.update({
-      where: { id: applicationId },
-      data: { status: 'RESOLVED' },
-    });
-
-    await createAuditLog(adminId!, 'APPROVE_APPLICATION', { applicationId, psychologistId: psychologist.id });
-
-    // Send notification to psychologist
-    await prisma.notification.create({
-      data: {
-        userId: psychologist.userId,
-        title: '¡Expediente Aprobado!',
-        content: 'Tu perfil profesional y documentación han sido aprobados con éxito. Tu cuenta ahora cuenta con el distintivo de Psicólogo Verificado.',
-        isRead: false,
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Solicitud aprobada con éxito. El psicólogo ya es un profesional verificado.',
-    });
-  } catch (error) {
-    next(error);
-  }
+    await reviewApplication(req.params.applicationId, req.user!.userId, 'APPROVE', req.body?.notes);
+    res.status(200).json({ status: 'success', message: 'Solicitud actualizada correctamente' });
+  } catch (error) { next(error); }
 };
 
-export const requestChanges = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const requestChanges = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { applicationId } = req.params;
-    const { notes } = req.body;
-    const adminId = req.user?.userId;
-
-    if (!notes) {
-      throw new AppError('Indica qué cambios son requeridos', 400);
-    }
-
-    const request = await prisma.verificationRequest.findUnique({
-      where: { id: applicationId },
-      include: { psychologist: true },
-    });
-
-    if (!request) {
-      throw new AppError('Verification request not found', 404);
-    }
-
-    const psychologist = request.psychologist;
-    const oldStatus = psychologist.status;
-
-    // 1. Update psychologist status to REQUIERE_CAMBIOS
-    await prisma.psychologistProfile.update({
-      where: { id: psychologist.id },
-      data: { status: 'REQUIERE_CAMBIOS' },
-    });
-
-    // 2. Log history
-    await prisma.verificationStatusHistory.create({
-      data: {
-        psychologistId: psychologist.id,
-        fromStatus: oldStatus,
-        toStatus: 'REQUIERE_CAMBIOS',
-        changedById: adminId!,
-        comment: `Observaciones: ${notes}`,
-      },
-    });
-
-    // 3. Create Review & close request
-    await prisma.verificationReview.create({
-      data: {
-        requestId: applicationId,
-        revisorId: adminId!,
-        decision: 'REQUEST_CHANGES',
-        notes,
-      },
-    });
-
-    await prisma.verificationRequest.update({
-      where: { id: applicationId },
-      data: { status: 'RESOLVED' },
-    });
-
-    await createAuditLog(adminId!, 'REQUEST_CHANGES', { applicationId, notes });
-
-    // Send notification to psychologist
-    await prisma.notification.create({
-      data: {
-        userId: psychologist.userId,
-        title: 'Correcciones Requeridas en tu Expediente',
-        content: `El comité de revisión ha solicitado las siguientes correcciones en tu documentación: ${notes}`,
-        isRead: false,
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Solicitud marcada para corrección. Se han notificado las observaciones.',
-    });
-  } catch (error) {
-    next(error);
-  }
+    await reviewApplication(req.params.applicationId, req.user!.userId, 'REQUEST_CHANGES', req.body?.notes);
+    res.status(200).json({ status: 'success', message: 'Solicitud actualizada correctamente' });
+  } catch (error) { next(error); }
 };
 
-export const rejectApplication = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const rejectApplication = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { applicationId } = req.params;
-    const { notes } = req.body;
-    const adminId = req.user?.userId;
-
-    if (!notes) {
-      throw new AppError('Indica el motivo de rechazo administrativo', 400);
-    }
-
-    const request = await prisma.verificationRequest.findUnique({
-      where: { id: applicationId },
-      include: { psychologist: true },
-    });
-
-    if (!request) {
-      throw new AppError('Verification request not found', 404);
-    }
-
-    const psychologist = request.psychologist;
-    const oldStatus = psychologist.status;
-
-    // 1. Update status to RECHAZADO
-    await prisma.psychologistProfile.update({
-      where: { id: psychologist.id },
-      data: { status: 'RECHAZADO' },
-    });
-
-    // 2. Log history
-    await prisma.verificationStatusHistory.create({
-      data: {
-        psychologistId: psychologist.id,
-        fromStatus: oldStatus,
-        toStatus: 'RECHAZADO',
-        changedById: adminId!,
-        comment: `Rechazo administrativo: ${notes}`,
-      },
-    });
-
-    // 3. Create review & close request
-    await prisma.verificationReview.create({
-      data: {
-        requestId: applicationId,
-        revisorId: adminId!,
-        decision: 'REJECT',
-        notes,
-      },
-    });
-
-    await prisma.verificationRequest.update({
-      where: { id: applicationId },
-      data: { status: 'RESOLVED' },
-    });
-
-    await createAuditLog(adminId!, 'REJECT_APPLICATION', { applicationId, notes });
-
-    // Send notification to psychologist
-    await prisma.notification.create({
-      data: {
-        userId: psychologist.userId,
-        title: 'Solicitud de Verificación No Aprobada',
-        content: `Tu solicitud de verificación no ha sido aprobada: ${notes}`,
-        isRead: false,
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Solicitud rechazada correctamente.',
-    });
-  } catch (error) {
-    next(error);
-  }
+    await reviewApplication(req.params.applicationId, req.user!.userId, 'REJECT', req.body?.notes);
+    res.status(200).json({ status: 'success', message: 'Solicitud actualizada correctamente' });
+  } catch (error) { next(error); }
 };
 
 export const downloadDocument = async (
@@ -502,7 +225,7 @@ export const downloadDocument = async (
     }
 
     const isAdminOrRevisor =
-      requesterRoles.includes('ADMIN') || requesterRoles.includes('REVISOR');
+      requesterRoles.includes('ADMIN') || requesterRoles.includes('REVISOR') || requesterRoles.includes('SUPERADMIN');
     const isOwner = document.psychologist.userId === requesterId;
 
     if (!isAdminOrRevisor && !isOwner) {
@@ -562,6 +285,7 @@ export const updateDocumentStatus = async (
     };
 
     if (expiresAt !== undefined) {
+      if (expiresAt !== null && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)))) throw new AppError('Fecha de expiración inválida', 400);
       updateData.expiresAt = expiresAt ? new Date(expiresAt) : null;
     }
 
@@ -670,9 +394,8 @@ export const listUsers = async (
     }
 
     if (status) {
-      where.psychologistProfile = {
-        status: status as any,
-      };
+      if (!Object.values(UserStatus).includes(status as UserStatus)) throw new AppError('Estado de cuenta inválido', 400);
+      where.status = status;
     }
 
     const users = await prisma.user.findMany({
@@ -736,146 +459,44 @@ export const listRoles = async (
   }
 };
 
-export const updateUserRoles = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const updateUserRoles = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { userId } = req.params;
     const { roles } = req.body;
-    const adminId = req.user?.userId;
-
-    if (!Array.isArray(roles) || roles.length === 0) {
-      throw new AppError('Debes especificar al menos un rol válido', 400);
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { userRoles: { include: { role: true } } },
+    const userId = req.params.userId;
+    if (!Array.isArray(roles) || !roles.length || roles.some(r => typeof r !== 'string') || new Set(roles).size !== roles.length) throw new AppError('Especifica roles únicos válidos', 400);
+    await serializable(async tx => {
+      const user = await tx.user.findUnique({ where: { id: userId }, include: { userRoles: { include: { role: true } }, psychologistProfile: true } });
+      if (!user) throw new AppError('Usuario no encontrado', 404);
+      const oldRoles = user.userRoles.map(r => r.role.name);
+      if ((roles.includes('SUPERADMIN') || oldRoles.includes('SUPERADMIN')) && !req.user!.roles.includes('SUPERADMIN')) throw new AppError('Solo SUPERADMIN puede gestionar este rol', 403);
+      if (userId === req.user!.userId && !roles.some(r => ['ADMIN', 'SUPERADMIN'].includes(r))) throw new AppError('No puedes retirar tu propio acceso administrativo', 400);
+      if (roles.includes('PSYCHOLOGIST_VERIFIED') && user.psychologistProfile?.status !== 'VERIFICADO') throw new AppError('El rol profesional requiere una acreditación aprobada', 400);
+      const valid = await tx.role.findMany({ where: { name: { in: roles } } });
+      if (valid.length !== roles.length) throw new AppError('Uno o más roles no existen', 400);
+      await tx.userRole.deleteMany({ where: { userId } });
+      await tx.userRole.createMany({ data: valid.map(r => ({ userId, roleId: r.id })) });
+      await tx.auditLog.create({ data: { userId: req.user!.userId, action: 'UPDATE_USER_ROLES', details: { targetUserId: userId, oldRoles, newRoles: roles } } });
     });
-
-    if (!user) {
-      throw new AppError('Usuario no encontrado', 404);
-    }
-
-    const validRoles = await prisma.role.findMany({
-      where: { name: { in: roles } },
-    });
-
-    if (validRoles.length !== roles.length) {
-      throw new AppError('Uno o más roles especificados no existen', 400);
-    }
-
-    await prisma.$transaction([
-      prisma.userRole.deleteMany({
-        where: { userId },
-      }),
-      prisma.userRole.createMany({
-        data: validRoles.map((r) => ({
-          userId,
-          roleId: r.id,
-        })),
-      }),
-    ]);
-
-    await createAuditLog(adminId!, 'UPDATE_USER_ROLES', {
-      targetUserId: userId,
-      oldRoles: user.userRoles.map((ur) => ur.role.name),
-      newRoles: roles,
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Roles actualizados con éxito',
-    });
-  } catch (error) {
-    next(error);
-  }
+    res.status(200).json({ status: 'success', message: 'Roles actualizados' });
+  } catch (error) { next(error); }
 };
 
-export const updateUserStatus = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const updateUserStatus = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { userId } = req.params;
     const { status } = req.body;
-    const adminId = req.user?.userId;
-
-    if (!status) {
-      throw new AppError('Debes especificar el nuevo estado', 400);
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { psychologistProfile: true },
+    if (!Object.values(UserStatus).includes(status)) throw new AppError('Estado de cuenta inválido', 400);
+    const userId = req.params.userId;
+    if (userId === req.user!.userId && status !== 'ACTIVE') throw new AppError('No puedes desactivar tu propia cuenta administrativa', 400);
+    await serializable(async tx => {
+      const user = await tx.user.findUnique({ where: { id: userId }, include: { userRoles: { include: { role: true } } } });
+      if (!user) throw new AppError('Usuario no encontrado', 404);
+      if (user.userRoles.some(r => r.role.name === 'SUPERADMIN') && !req.user!.roles.includes('SUPERADMIN')) throw new AppError('Solo SUPERADMIN puede modificar esta cuenta', 403);
+      await tx.user.update({ where: { id: userId }, data: { status } });
+      await tx.auditLog.create({ data: { userId: req.user!.userId, action: 'UPDATE_USER_STATUS', details: { targetUserId: userId, oldStatus: user.status, newStatus: status } } });
+      await tx.notification.create({ data: { userId, title: 'Estado de cuenta actualizado', content: 'El estado de tu cuenta cambió a ' + status + '.' } });
     });
-
-    if (!user) {
-      throw new AppError('Usuario no encontrado', 404);
-    }
-
-    const isSuspending = status === 'SUSPENDED' || status === 'SUSPENDIDO';
-
-    // 1. Update User model status
-    const newUserStatus = isSuspending ? 'SUSPENDED' : 'ACTIVE';
-    await prisma.user.update({
-      where: { id: userId },
-      data: { status: newUserStatus },
-    });
-
-    // 2. If user is a psychologist, update psychologistProfile status accordingly
-    if (user.psychologistProfile) {
-      let newPsychologistStatus = status;
-      if (isSuspending) {
-        newPsychologistStatus = 'SUSPENDIDO';
-      } else if (status === 'ACTIVE' || status === 'ACTIVO') {
-        newPsychologistStatus = 'VERIFICADO';
-      }
-
-      await prisma.psychologistProfile.update({
-        where: { id: user.psychologistProfile.id },
-        data: { status: newPsychologistStatus as any },
-      });
-
-      await prisma.verificationStatusHistory.create({
-        data: {
-          psychologistId: user.psychologistProfile.id,
-          fromStatus: user.psychologistProfile.status,
-          toStatus: newPsychologistStatus as any,
-          changedById: adminId!,
-          comment: `Estado administrativo actualizado a ${newPsychologistStatus}`,
-        },
-      });
-    }
-
-    await createAuditLog(adminId!, 'UPDATE_USER_STATUS', {
-      targetUserId: userId,
-      newStatus: newUserStatus,
-      psychologistStatus: user.psychologistProfile ? (isSuspending ? 'SUSPENDIDO' : 'VERIFICADO') : undefined,
-    });
-
-    // Send notification to the user
-    await prisma.notification.create({
-      data: {
-        userId,
-        title: isSuspending ? 'Cuenta Suspendida' : 'Cuenta Reactivada',
-        content: isSuspending
-          ? 'Tu cuenta ha sido suspendida temporalmente por un administrador.'
-          : 'Tu cuenta ha sido reactivada exitosamente.',
-        isRead: false,
-      },
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: `Estado del usuario actualizado a ${isSuspending ? 'SUSPENDIDO' : 'ACTIVO'}`,
-    });
-  } catch (error) {
-    next(error);
-  }
+    res.status(200).json({ status: 'success', message: 'Estado de cuenta actualizado' });
+  } catch (error) { next(error); }
 };
 
 export const listSpecialties = async (
@@ -1356,4 +977,3 @@ export const broadcastNotification = async (
     next(error);
   }
 };
-

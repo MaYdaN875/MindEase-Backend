@@ -6,3 +6,7 @@ docker-compose*
 npm-debug.log
 .git
 .idea
+storage
+scratch
+tests
+.npm-tool

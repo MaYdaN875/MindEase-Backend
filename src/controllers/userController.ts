@@ -28,6 +28,13 @@ export const getProfile = async (
             role: true,
           },
         },
+        psychologistProfile: {
+          select: {
+            id: true,
+            status: true,
+            autoConfirmAppointments: true,
+          },
+        },
       },
     });
 
@@ -46,6 +53,7 @@ export const getProfile = async (
           name: user.name,
           phone: user.phone,
           roles: rolesList,
+          psychologistProfile: user.psychologistProfile,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
         },
