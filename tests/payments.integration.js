@@ -1,0 +1,142 @@
+// Real PostgreSQL and Express, isolated in a unique disposable schema. Never uses public tables.
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const { PrismaClient } = require('@prisma/client');
+const jwt = require('jsonwebtoken');
+
+async function main() {
+  const source = process.env.TEST_DATABASE_URL;
+  if (!source || !['localhost', '127.0.0.1'].includes(new URL(source).hostname)) throw new Error('TEST_DATABASE_URL must point to a local test database');
+  const schema = 'mindease_finance_test_' + randomUUID().replaceAll('-', '');
+  const url = new URL(source);
+  url.searchParams.set('schema', schema);
+  process.env.DATABASE_URL = url.toString();
+  process.env.JWT_SECRET = randomUUID();
+  process.env.NODE_ENV = 'test';
+  process.env.PLATFORM_FEE_PERCENT = '15';
+  const control = new PrismaClient({ datasources: { db: { url: source } } });
+  let db, server, checks = 0;
+  const check = (name, condition) => { assert.ok(condition, name); console.log('PASS ' + name); checks++; };
+  try {
+    await control.$executeRawUnsafe('CREATE SCHEMA "' + schema + '"');
+    execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'db', 'push', '--skip-generate', '--schema', 'tests/fixtures/pre-finance.prisma'], { env: process.env, stdio: 'pipe' });
+    for (const migration of ['20260912235900_payment_states', '20260913000000_payment_integrity']) {
+      execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'db', 'execute', '--file', 'prisma/migrations/' + migration + '/migration.sql', '--schema', 'prisma/schema.prisma'], { env: process.env, stdio: 'pipe' });
+    }
+    check('incremental migration applies to the actual previous schema', true);
+    db = require('../src/config/db').default;
+    const app = require('../src/app').default;
+    server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+    const base = 'http://127.0.0.1:' + server.address().port + '/api';
+    async function user(name, role) {
+      const u = await db.user.create({ data: { name, email: name + '@example.test', passwordHash: 'unused-test-hash', userRoles: { create: { role: { connectOrCreate: { where: { name: role }, create: { name: role } } } } } } });
+      return { ...u, token: jwt.sign({ userId: u.id, roles: [role] }, process.env.JWT_SECRET) };
+    }
+    const patient = await user('patient', 'USER'), other = await user('other', 'USER'), doctor = await user('doctor', 'PSYCHOLOGIST_VERIFIED');
+    const profile = await db.psychologistProfile.create({ data: { userId: doctor.id, status: 'VERIFICADO', consultationPrice: 600, autoConfirmAppointments: true } });
+    const appointment = (extra = {}) => db.appointment.create({ data: { userId: patient.id, psychologistId: profile.id, price: 600, startAt: new Date(Date.now() + 5 * 60000), endAt: new Date(Date.now() + 55 * 60000), consultation: { create: {} }, ...extra } });
+    async function api(method, route, u, body) {
+      const response = await fetch(base + route, { method, headers: { Authorization: 'Bearer ' + u.token, 'Content-Type': 'application/json' }, ...(body && { body: JSON.stringify(body) }) });
+      return { status: response.status, body: await response.json() };
+    }
+    const payload = (a, key = randomUUID(), number = '4242424242424242') => ({ appointmentId: a.id, idempotencyKey: key, card: { number, expMonth: 12, expYear: 2099, cvc: '123', holderName: 'Test Patient' } });
+    const pay = (a, key, number) => api('POST', '/payments/checkout', patient, payload(a, key, number));
+    const status = (a, value) => api('PATCH', '/appointments/' + a.id + '/status', doctor, { status: value });
+    const a = await appointment();
+    check('unpaid confirmation blocked', (await status(a, 'CONFIRMED')).status === 409);
+    await db.appointment.update({ where: { id: a.id }, data: { status: 'CONFIRMED' } });
+    check('legacy unpaid start blocked', (await api('POST', '/consultations/' + a.id + '/start', doctor, {})).status === 409);
+    await db.appointment.update({ where: { id: a.id }, data: { status: 'PENDING' } });
+    const key = randomUUID();
+    const paid = await pay(a, key);
+    check('payment succeeds and API preserves numeric money', paid.status === 200 && paid.body.data.payment.amount === 600 && paid.body.data.payment.platformFee === 90);
+    check('paid appointment remains manual even with old auto-confirm enabled', (await db.appointment.findUnique({ where: { id: a.id } })).status === 'PENDING');
+    check('foreign idempotency replay forbidden', (await api('POST', '/payments/checkout', other, payload(a, key))).status === 403);
+    const b = await appointment();
+    check('key cannot be reused for another appointment', (await pay(b, key)).status === 409);
+    check('same key replays payment', (await pay(a, key)).body.data.payment.id === paid.body.data.payment.id);
+    check('new key cannot charge paid appointment', (await pay(a)).status === 409);
+    check('manual confirmation succeeds after payment', (await status(a, 'CONFIRMED')).status === 200);
+    check('paid consultation starts', (await api('POST', '/consultations/' + a.id + '/start', doctor, {})).status === 200);
+    check('paid consultation completes', (await api('POST', '/consultations/' + a.id + '/complete', doctor, {})).status === 200);
+    const earnings = (await api('GET', '/psychologists/me/earnings', doctor)).body.data.financials;
+    check('only completed consultation releases net amount', earnings.availableBalance === 510 && earnings.heldBalance === 0);
+    const declinedKey = randomUUID();
+    check('declined card returns definitive failure', (await pay(b, declinedKey, '4000000000000002')).status === 402);
+    check('declined key cannot be changed into success', (await pay(b, declinedKey)).status === 402);
+    check('corrected card uses new attempt on same appointment', (await pay(b)).status === 200);
+    check('failed attempt retained', await db.paymentAttempt.count({ where: { payment: { appointmentId: b.id } } }) === 2);
+    const c = await appointment();
+    const concurrent = await Promise.all([pay(c), pay(c)]);
+    check('different-key concurrent checkout charges once', concurrent.filter(r => r.status === 200).length === 1 && concurrent.some(r => r.status === 409));
+    check('one gateway operation for concurrent checkout', await db.paymentAttempt.count({ where: { payment: { appointmentId: c.id } } }) === 1);
+    const d = await appointment(), sameKey = randomUUID();
+    const same = await Promise.all([pay(d, sameKey), pay(d, sameKey)]);
+    check('same-key concurrent checkout can be replayed safely', same.every(r => [200, 202, 409].includes(r.status)) && (await pay(d, sameKey)).status === 200);
+    check('one durable mock operation per key', await db.mockGatewayOperation.count({ where: { key: 'charge:' + sameKey } }) === 1);
+    const { reservePayment, finalizePayment, recoverPayments } = require('../src/services/paymentWorkflow');
+    const { getPaymentGateway } = require('../src/services/paymentGateway');
+    const gateway = getPaymentGateway();
+    const e = await appointment(), lostKey = randomUUID();
+    const attempt = await reservePayment(patient.id, e.id, lostKey);
+    await gateway.charge({ ...payload(e, lostKey), amount: 600, currency: 'MXN', customer: patient });
+    await recoverPayments();
+    check('recovery after provider success and missing final commit', (await db.payment.findUnique({ where: { appointmentId: e.id } })).status === 'SUCCEEDED');
+    const f = await appointment(), cancelKey = randomUUID();
+    const pending = await reservePayment(patient.id, f.id, cancelKey);
+    await status(f, 'CANCELLED');
+    const result = await gateway.charge({ ...payload(f, cancelKey), amount: 600, currency: 'MXN', customer: patient });
+    await finalizePayment(pending.id, result);
+    check('cancel/charge race queues full refund without reopening appointment', (await db.payment.findUnique({ where: { appointmentId: f.id } })).status === 'REFUND_PENDING' && (await db.appointment.findUnique({ where: { id: f.id } })).status === 'CANCELLED');
+    const { processPendingRefunds } = require('../src/services/refundPolicy');
+    const originalRefund = gateway.refund.bind(gateway);
+    gateway.refund = async () => { throw new Error('test provider unavailable'); };
+    await processPendingRefunds();
+    const failedRefund = await db.payment.findUnique({ where: { appointmentId: f.id } });
+    check('refund failure is durable and retryable', failedRefund.status === 'REFUND_PENDING' && failedRefund.refundAttempts === 1 && failedRefund.refundError);
+    gateway.refund = originalRefund;
+    await Promise.all([processPendingRefunds(), processPendingRefunds()]);
+    const refunded = await db.payment.findUnique({ where: { appointmentId: f.id } });
+    check('refund retried with persisted provider reference', refunded.status === 'REFUNDED' && refunded.refundId);
+    check('concurrent refunds deduplicated', await db.mockGatewayOperation.count({ where: { key: 'refund:refund:' + refunded.id + ':full' } }) === 1);
+    check('one refund notification', await db.notification.count({ where: { referenceId: f.id, title: 'Reembolso de prueba procesado' } }) === 1);
+    check('cancellation is idempotent', (await status(f, 'CANCELLED')).status === 200);
+    const g = await appointment(), idle = await reservePayment(patient.id, g.id, randomUUID());
+    await db.paymentAttempt.update({ where: { id: idle.id }, data: { createdAt: new Date(Date.now() - 120000) } });
+    await recoverPayments();
+    check('unexecuted mock attempt safely released', (await db.payment.findUnique({ where: { appointmentId: g.id } })).status === 'FAILED');
+    const payoutKey = randomUUID();
+    const payout = { amount: 400, bankName: 'Test bank', accountClabe: '032180000118359719', idempotencyKey: payoutKey };
+    const withdrawal = await api('POST', '/psychologists/me/payouts', doctor, payout);
+    check('simulated withdrawal reserves funds', withdrawal.status === 201 && withdrawal.body.data.payout.amount === 400);
+    check('CLABE not stored in clear text for simulation', !(await db.payoutRequest.findUnique({ where: { idempotencyKey: payoutKey } })).accountClabe.includes(payout.accountClabe));
+    check('withdrawal replay does not reserve twice', (await api('POST', '/psychologists/me/payouts', doctor, payout)).status === 201 && await db.payoutRequest.count({ where: { idempotencyKey: payoutKey } }) === 1);
+    check('overdraw blocked', (await api('POST', '/psychologists/me/payouts', doctor, { ...payout, idempotencyKey: randomUUID(), amount: 111 })).status === 400);
+    check('fractional cent blocked', (await api('POST', '/psychologists/me/payouts', doctor, { ...payout, idempotencyKey: randomUUID(), amount: 1.001 })).status === 400);
+    check('invalid CLABE checksum blocked', (await api('POST', '/psychologists/me/payouts', doctor, { ...payout, idempotencyKey: randomUUID(), accountClabe: '032180000118359710' })).status === 400);
+    const { calculateFees } = require('../src/services/feePolicy');
+    process.env.PLATFORM_FEE_PERCENT = '1';
+    check('one percent means one percent', calculateFees(100).platformFee === 1);
+    process.env.PLATFORM_FEE_PERCENT = '15garbage';
+    assert.throws(() => calculateFees(100)); checks++;
+    process.env.PLATFORM_FEE_PERCENT = '15';
+    check('mock rejects non-test card including invalid Luhn prefix', (await pay(await appointment(), randomUUID(), '4242424242424241')).status === 402);
+    const suspendedBooking = await appointment();
+    const suspendedAttempt = await reservePayment(patient.id, suspendedBooking.id, randomUUID());
+    const suspendedResult = await gateway.charge({ ...payload(suspendedBooking, suspendedAttempt.idempotencyKey), amount: 600, currency: 'MXN', customer: patient });
+    await db.psychologistProfile.update({ where: { id: profile.id }, data: { status: 'SUSPENDIDO' } });
+    await finalizePayment(suspendedAttempt.id, suspendedResult);
+    check('professional suspension during charge cancels and queues refund', (await db.payment.findUnique({ where: { appointmentId: suspendedBooking.id } })).status === 'REFUND_PENDING');
+    process.env.NODE_ENV = 'production';
+    check('mock fails closed in production', (await pay(await appointment())).status === 503);
+    console.log('FINANCE: ' + checks + ' checks passed');
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    if (db) await db.$disconnect();
+    if (!/^mindease_finance_test_[a-f0-9]{32}$/.test(schema)) throw new Error('Unsafe cleanup target');
+    await control.$executeRawUnsafe('DROP SCHEMA IF EXISTS "' + schema + '" CASCADE');
+    await control.$disconnect();
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

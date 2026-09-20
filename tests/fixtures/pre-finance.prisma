@@ -34,13 +34,6 @@ model User {
   changedStatusLogs   VerificationStatusHistory[] @relation("StatusChanges")
   patientAppointments Appointment[]               @relation("PatientAppointments")
   payments            Payment[]                   @relation("PatientPayments")
-  channelFollows      ChannelFollow[]
-  communityPosts      CommunityPost[]
-  postLikes           PostLike[]
-  postComments        PostComment[]
-  moderatedPosts      CommunityPost[]             @relation("PostModerator")
-  reportedItems       CommunityReport[]           @relation("UserReports")
-  reviewedReports     CommunityReport[]           @relation("ReportReviewer")
 }
 
 model Role {
@@ -94,7 +87,6 @@ model PsychologistProfile {
   appointments         Appointment[]
   payments             Payment[]                   @relation("PsychologistPayments")
   payoutRequests       PayoutRequest[]
-  channels             CommunityChannel[]
 }
 
 model Specialty {
@@ -275,8 +267,6 @@ model Consultation {
 
 enum PaymentStatus {
   PENDING
-  PROCESSING
-  REFUND_PENDING
   AUTHORIZED
   SUCCEEDED
   FAILED
@@ -306,10 +296,10 @@ model Payment {
   patient        User              @relation("PatientPayments", fields: [patientId], references: [id], onDelete: Cascade)
   psychologistId String
   psychologist   PsychologistProfile @relation("PsychologistPayments", fields: [psychologistId], references: [id], onDelete: Cascade)
-  amount         Decimal           @db.Decimal(12, 2)
+  amount         Float
   currency       String            @default("MXN")
-  platformFee    Decimal           @db.Decimal(12, 2)
-  netAmount      Decimal           @db.Decimal(12, 2)
+  platformFee    Float
+  netAmount      Float
   status         PaymentStatus     @default(PENDING)
   paymentMethod  PaymentMethodType @default(CREDIT_CARD)
   cardLast4      String?
@@ -319,10 +309,6 @@ model Payment {
   receiptUrl     String?
   refundReason   String?
   refundedAt     DateTime?
-  refundId       String?           @unique
-  refundAttempts Int               @default(0)
-  refundError    String?
-  attempts       PaymentAttempt[]
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -334,8 +320,7 @@ model PayoutRequest {
   id             String              @id @default(uuid())
   psychologistId String
   psychologist   PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
-  amount         Decimal             @db.Decimal(12, 2)
-  idempotencyKey String?             @unique
+  amount         Float
   currency       String              @default("MXN")
   status         PayoutStatus        @default(REQUESTED)
   bankName       String
@@ -346,198 +331,3 @@ model PayoutRequest {
 
   @@index([psychologistId, status])
 }
-
-// No PAN, CVC or card fingerprint is persisted. A failed attempt remains auditable.
-model PaymentAttempt {
-  id             String        @id @default(uuid())
-  paymentId      String
-  payment        Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  idempotencyKey String        @unique
-  status         PaymentStatus @default(PROCESSING)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  @@index([status, createdAt])
-}
-
-// Durable simulation results. Replace the mock adapter, not this table, with a real provider.
-model MockGatewayOperation {
-  key       String   @id
-  result    Json
-  createdAt DateTime @default(now())
-}
-
-// -------------------------------------------------------------
-// FASE 5 — COMMUNITY (CANALES, POSTS, INTERACCIÓN Y MODERACIÓN)
-// -------------------------------------------------------------
-
-model CommunityCategory {
-  id          String             @id @default(uuid())
-  name        String
-  slug        String             @unique
-  description String?
-  isActive    Boolean            @default(true)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-  channels    CommunityChannel[]
-
-  @@index([slug])
-}
-
-model CommunityChannel {
-  id              String              @id @default(uuid())
-  psychologistId  String
-  psychologist    PsychologistProfile @relation(fields: [psychologistId], references: [id], onDelete: Cascade)
-  categoryId      String
-  category        CommunityCategory   @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  name            String
-  description     String
-  coverImageUrl   String?
-  specialties     String?
-  isActive        Boolean             @default(true)
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  posts           CommunityPost[]
-  followers       ChannelFollow[]
-  reports         CommunityReport[]
-
-  @@index([psychologistId])
-  @@index([categoryId])
-}
-
-model ChannelFollow {
-  id        String           @id @default(uuid())
-  userId    String
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  channelId String
-  channel   CommunityChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  createdAt DateTime         @default(now())
-
-  @@unique([userId, channelId])
-  @@index([channelId])
-  @@index([userId])
-}
-
-enum PostStatus {
-  DRAFT
-  PUBLISHED
-  HIDDEN
-  ARCHIVED
-}
-
-model CommunityPost {
-  id              String            @id @default(uuid())
-  channelId       String
-  channel         CommunityChannel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  authorId        String
-  author          User              @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  title           String
-  content         String
-  tags            String[]          @default([])
-  status          PostStatus        @default(DRAFT)
-  hiddenAt        DateTime?
-  hiddenReason    String?
-  hiddenById      String?
-  hiddenBy        User?             @relation("PostModerator", fields: [hiddenById], references: [id], onDelete: SetNull)
-  publishedAt     DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  media           PostMedia[]
-  likes           PostLike[]
-  comments        PostComment[]
-  reports         CommunityReport[]
-
-  @@index([channelId, status])
-  @@index([authorId])
-  @@index([createdAt])
-}
-
-enum PostMediaType {
-  IMAGE
-  DOCUMENT
-  LINK
-}
-
-model PostMedia {
-  id           String        @id @default(uuid())
-  postId       String
-  post         CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
-  type         PostMediaType
-  url          String
-  thumbnailUrl String?
-  caption      String?
-  sizeBytes    Int?
-  createdAt    DateTime      @default(now())
-
-  @@index([postId])
-}
-
-model PostLike {
-  id        String        @id @default(uuid())
-  userId    String
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  postId    String
-  post      CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
-  createdAt DateTime      @default(now())
-
-  @@unique([userId, postId])
-  @@index([postId])
-}
-
-model PostComment {
-  id           String            @id @default(uuid())
-  postId       String
-  post         CommunityPost     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  userId       String
-  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  content      String
-  isHidden     Boolean           @default(false)
-  hiddenAt     DateTime?
-  hiddenReason String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  reports      CommunityReport[]
-
-  @@index([postId, createdAt])
-  @@index([userId])
-}
-
-enum ReportReason {
-  SPAM
-  HARASSMENT
-  MEDICAL_MISINFORMATION
-  INAPPROPRIATE_CONTENT
-  OTHER
-}
-
-enum ReportStatus {
-  PENDING
-  REVIEWED
-  RESOLVED
-  DISMISSED
-}
-
-model CommunityReport {
-  id             String            @id @default(uuid())
-  reporterId     String
-  reporter       User              @relation("UserReports", fields: [reporterId], references: [id], onDelete: Cascade)
-  channelId      String?
-  channel        CommunityChannel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  postId         String?
-  post           CommunityPost?    @relation(fields: [postId], references: [id], onDelete: Cascade)
-  commentId      String?
-  comment        PostComment?      @relation(fields: [commentId], references: [id], onDelete: Cascade)
-  reason         ReportReason
-  details        String?
-  status         ReportStatus      @default(PENDING)
-  reviewedById   String?
-  reviewedBy     User?             @relation("ReportReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
-  moderatorNotes String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-
-  @@unique([reporterId, channelId])
-  @@unique([reporterId, postId])
-  @@unique([reporterId, commentId])
-  @@index([status, createdAt])
-}
-

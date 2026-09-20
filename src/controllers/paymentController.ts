@@ -3,269 +3,55 @@ import { z } from 'zod';
 import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
-import { calculateFees } from '../services/feePolicy';
+import { paymentView } from '../services/money';
+import { reservePayment, finalizePayment } from '../services/paymentWorkflow';
 import { getPaymentGateway } from '../services/paymentGateway';
-import { serializable } from '../services/clinicalPolicy';
-import { sendNotification } from '../services/notificationService';
 
 const checkoutSchema = z.object({
-  appointmentId: z.string().uuid('ID de cita inválido'),
-  paymentMethod: z.enum(['CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'WALLET']).default('CREDIT_CARD'),
+  appointmentId: z.string().uuid(), idempotencyKey: z.string().uuid(),
+  paymentMethod: z.literal('CREDIT_CARD').default('CREDIT_CARD'),
   card: z.object({
-    number: z.string().min(12).max(19),
-    expMonth: z.number().int().min(1).max(12),
-    expYear: z.number().int().min(2023).max(2100),
-    cvc: z.string().min(3).max(4),
-    holderName: z.string().min(2).max(100),
+    number: z.string().min(13).max(19), expMonth: z.number().int().min(1).max(12),
+    expYear: z.number().int().min(2023).max(2100), cvc: z.string().regex(/^\d{3,4}$/),
+    holderName: z.string().trim().min(2).max(100),
   }),
-  idempotencyKey: z.string().uuid().optional(),
 });
 
 export const checkout = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const headerKey = req.header('idempotency-key') || req.header('Idempotency-Key');
-    const bodyKey = req.body?.idempotencyKey;
-    const idempotencyKey = headerKey || bodyKey;
-
-    // Check for existing transaction if idempotency key provided
-    if (idempotencyKey) {
-      const existingPayment = await prisma.payment.findUnique({
-        where: { idempotencyKey },
-        include: {
-          appointment: {
-            select: {
-              id: true,
-              startAt: true,
-              endAt: true,
-              status: true,
-              psychologist: {
-                select: {
-                  user: { select: { name: true } },
-                },
-              },
-            },
-          },
-        },
-      });
-
-      if (existingPayment) {
-        res.status(200).json({
-          status: 'success',
-          message: 'Transacción ya procesada previamente (idempotente)',
-          data: { payment: existingPayment },
-        });
+    const headerKey = req.header('idempotency-key');
+    if (headerKey && req.body?.idempotencyKey && headerKey !== req.body.idempotencyKey) throw new AppError('Llaves de idempotencia inconsistentes', 400);
+    const parsed = checkoutSchema.safeParse({ ...req.body, idempotencyKey: headerKey || req.body?.idempotencyKey });
+    if (!parsed.success) throw new AppError('Datos de pago o llave de idempotencia inválidos', 400);
+    const { appointmentId, idempotencyKey, card } = parsed.data;
+    const gateway = getPaymentGateway();
+    const attempt = await reservePayment(req.user!.userId, appointmentId, idempotencyKey);
+    if (attempt.status === 'FAILED') {
+      res.status(402).json({ status: 'error', definitiveFailure: true, message: 'Intento rechazado. Usa una nueva llave para corregir la tarjeta.' });
+      return;
+    }
+    let payment = attempt.payment;
+    if (attempt.status === 'PROCESSING') {
+      try {
+        const patient = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.userId }, select: { id: true, name: true, email: true } });
+        const result = await gateway.charge({ amount: Number(payment.amount), currency: payment.currency, card, customer: patient, idempotencyKey });
+        payment = await finalizePayment(attempt.id, result);
+        if (!result.success) {
+          res.status(402).json({ status: 'error', definitiveFailure: true, message: result.errorMessage || 'Pago rechazado' });
+          return;
+        }
+      } catch {
+        res.status(202).json({ status: 'pending', message: 'Pago pendiente de conciliación. Reintenta con la misma llave.', appointmentId });
         return;
       }
     }
-
-    const parsed = checkoutSchema.safeParse({
-      ...req.body,
-      idempotencyKey: idempotencyKey || undefined,
+    const appointment = await prisma.appointment.findUniqueOrThrow({ where: { id: appointmentId } });
+    res.status(payment.status === 'SUCCEEDED' ? 200 : 409).json({
+      status: payment.status === 'SUCCEEDED' ? 'success' : 'error',
+      message: payment.status === 'SUCCEEDED' ? 'Pago de prueba recibido; consulta el estado de tu cita.' : 'La cita fue cancelada o el pago está en reembolso.',
+      data: { payment: paymentView(payment), autoConfirmed: false, appointmentStatus: appointment.status },
     });
-
-    if (!parsed.success) {
-      throw new AppError(parsed.error.issues[0].message, 400);
-    }
-
-    const { appointmentId, paymentMethod, card } = parsed.data;
-    const finalIdempotencyKey = idempotencyKey || undefined;
-    const userId = req.user!.userId;
-
-    // Verify appointment exists and belongs to patient
-    const appointment = await prisma.appointment.findUnique({
-      where: { id: appointmentId },
-      include: {
-        psychologist: {
-          include: {
-            user: { select: { id: true, name: true, email: true } },
-          },
-        },
-        user: { select: { id: true, name: true, email: true } },
-        payment: true,
-      },
-    });
-
-    if (!appointment) {
-      throw new AppError('Cita no encontrada', 404);
-    }
-
-    if (appointment.userId !== userId) {
-      throw new AppError('No tienes permiso para pagar esta cita', 403);
-    }
-
-    if (!['PENDING', 'CONFIRMED'].includes(appointment.status)) {
-      throw new AppError(`No es posible pagar una cita con estado ${appointment.status}`, 409);
-    }
-
-    if (appointment.payment && appointment.payment.status === 'SUCCEEDED') {
-      throw new AppError('Esta cita ya cuenta con un pago completado', 409);
-    }
-
-    // Freeze server-side price from Appointment snapshot
-    const grossPrice = appointment.price;
-    if (grossPrice <= 0) {
-      throw new AppError('El precio de la consulta debe ser mayor a 0 para procesar el pago', 400);
-    }
-
-    const { grossAmount, platformFee, netAmount } = calculateFees(grossPrice);
-    const currency = appointment.currency || 'MXN';
-
-    // Invoke payment gateway
-    const gateway = getPaymentGateway();
-    const gatewayResult = await gateway.charge({
-      amount: grossAmount,
-      currency,
-      card,
-      customer: {
-        id: appointment.user.id,
-        email: appointment.user.email,
-        name: appointment.user.name,
-      },
-      description: `Consulta psicológica con ${appointment.psychologist.user.name}`,
-      idempotencyKey: finalIdempotencyKey,
-    });
-
-    if (!gatewayResult.success) {
-      // Record failed transaction attempt for audit if desired
-      await prisma.payment.upsert({
-        where: { appointmentId },
-        update: {
-          status: 'FAILED',
-          amount: grossAmount,
-          platformFee,
-          netAmount,
-          currency,
-          cardLast4: gatewayResult.cardLast4,
-          cardBrand: gatewayResult.cardBrand,
-          transactionId: gatewayResult.transactionId,
-        },
-        create: {
-          appointmentId,
-          patientId: userId,
-          psychologistId: appointment.psychologistId,
-          amount: grossAmount,
-          platformFee,
-          netAmount,
-          currency,
-          status: 'FAILED',
-          paymentMethod,
-          cardLast4: gatewayResult.cardLast4,
-          cardBrand: gatewayResult.cardBrand,
-          transactionId: gatewayResult.transactionId,
-        },
-      });
-
-      throw new AppError(gatewayResult.errorMessage || 'El pago fue declinado por el emisor', 402);
-    }
-
-    // Persist successful payment and confirm appointment inside transaction
-    const savedPayment = await serializable(async tx => {
-      // Double check collision
-      const checkCurrent = await tx.payment.findUnique({ where: { appointmentId } });
-      if (checkCurrent && checkCurrent.status === 'SUCCEEDED') {
-        throw new AppError('Esta cita ya fue pagada', 409);
-      }
-
-      const payment = await tx.payment.upsert({
-        where: { appointmentId },
-        update: {
-          status: 'SUCCEEDED',
-          amount: grossAmount,
-          platformFee,
-          netAmount,
-          currency,
-          paymentMethod,
-          cardLast4: gatewayResult.cardLast4,
-          cardBrand: gatewayResult.cardBrand,
-          transactionId: gatewayResult.transactionId,
-          idempotencyKey: finalIdempotencyKey || null,
-        },
-        create: {
-          appointmentId,
-          patientId: userId,
-          psychologistId: appointment.psychologistId,
-          amount: grossAmount,
-          platformFee,
-          netAmount,
-          currency,
-          status: 'SUCCEEDED',
-          paymentMethod,
-          cardLast4: gatewayResult.cardLast4,
-          cardBrand: gatewayResult.cardBrand,
-          transactionId: gatewayResult.transactionId,
-          idempotencyKey: finalIdempotencyKey || null,
-        },
-      });
-
-      // Only auto-confirm if the psychologist configured autoConfirmAppointments to true
-      const autoConfirm = appointment.psychologist.autoConfirmAppointments === true;
-      if (autoConfirm && appointment.status === 'PENDING') {
-        await tx.appointment.update({
-          where: { id: appointmentId },
-          data: { status: 'CONFIRMED' },
-        });
-      }
-
-      return payment;
-    });
-
-    const autoConfirm = appointment.psychologist.autoConfirmAppointments === true;
-    const formatted = appointment.startAt.toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
-
-    // Send notifications according to workflow
-    if (autoConfirm) {
-      await Promise.all([
-        sendNotification({
-          userId,
-          title: 'Cita y pago confirmados',
-          content: `Tu pago de $${grossAmount.toFixed(2)} ${currency} para tu cita con ${appointment.psychologist.user.name} ha sido confirmado exitosamente.`,
-          type: 'APPOINTMENT_CONFIRMED',
-          referenceId: appointmentId,
-        }),
-        sendNotification({
-          userId: appointment.psychologist.user.id,
-          title: 'Nueva cita confirmada y pagada',
-          content: `${appointment.user.name} ha reservado y pagado su consulta para el ${formatted} ($${grossAmount.toFixed(2)} ${currency}).`,
-          type: 'APPOINTMENT_CONFIRMED',
-          referenceId: appointmentId,
-        }),
-      ]);
-    } else {
-      await Promise.all([
-        sendNotification({
-          userId,
-          title: 'Solicitud y pago en custodia',
-          content: `Tu pago de $${grossAmount.toFixed(2)} ${currency} está en custodia y tu solicitud fue enviada a ${appointment.psychologist.user.name} para su aprobación.`,
-          type: 'APPOINTMENT_REQUEST',
-          referenceId: appointmentId,
-        }),
-        sendNotification({
-          userId: appointment.psychologist.user.id,
-          title: 'Nueva solicitud de consulta pagada',
-          content: `${appointment.user.name} ha solicitado una cita para el ${formatted} con pago garantizado en custodia ($${grossAmount.toFixed(2)} ${currency}). Ingresa a tu panel para aceptarla o rechazarla.`,
-          type: 'APPOINTMENT_REQUEST',
-          referenceId: appointmentId,
-        }),
-      ]);
-    }
-
-    res.status(201).json({
-      status: 'success',
-      message: autoConfirm
-        ? 'Pago completado y cita confirmada exitosamente'
-        : 'Pago recibido en custodia. Solicitud enviada al psicólogo para su aprobación.',
-      data: {
-        payment: {
-          ...savedPayment,
-          receiptUrl: `/api/payments/${savedPayment.id}/receipt`,
-        },
-        autoConfirmed: autoConfirm,
-        appointmentStatus: autoConfirm ? 'CONFIRMED' : 'PENDING',
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 };
 
 export const getPatientHistory = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
@@ -299,7 +85,7 @@ export const getPatientHistory = async (req: AuthenticatedRequest, res: Response
         payments: payments.map(p => ({
           id: p.id,
           appointmentId: p.appointmentId,
-          amount: p.amount,
+          amount: Number(p.amount),
           currency: p.currency,
           status: p.status,
           paymentMethod: p.paymentMethod,
@@ -356,10 +142,10 @@ export const getReceipt = async (req: AuthenticatedRequest, res: Response, next:
           receiptNumber: `REC-${payment.id.slice(0, 8).toUpperCase()}`,
           date: payment.createdAt,
           transactionId: payment.transactionId,
-          amount: payment.amount,
+          amount: Number(payment.amount),
           currency: payment.currency,
-          platformFee: payment.platformFee,
-          netAmount: payment.netAmount,
+          platformFee: Number(payment.platformFee),
+          netAmount: Number(payment.netAmount),
           status: payment.status,
           paymentMethod: payment.paymentMethod,
           cardLast4: payment.cardLast4,

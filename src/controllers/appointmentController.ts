@@ -8,6 +8,8 @@ import { sendNotification } from '../services/notificationService';
 import { appointmentView, assertAppointmentTransition, requireProfessional, serializable } from '../services/clinicalPolicy';
 import { localDate, scheduleTimeZone, slotsForDate } from '../services/scheduling';
 import { processAppointmentRefund } from '../services/refundPolicy';
+import { requirePaid } from '../services/paymentWorkflow';
+import { cents } from '../services/money';
 
 const details = {
   psychologist: { include: { user: { select: { id: true, name: true } }, specialties: { include: { specialty: true } } } },
@@ -48,7 +50,7 @@ export const createAppointment = async (req: AuthenticatedRequest, res: Response
         },
       });
       if (collision) throw new AppError('El paciente o el profesional ya tiene una cita en ese horario', 409);
-      const price = psychologist.consultationPrice ?? 0;
+      const price = cents(psychologist.consultationPrice ?? 0) / 100;
       const requiresPayment = price > 0;
       return tx.appointment.create({
         data: {
@@ -91,6 +93,7 @@ export const getMyAppointments = async (req: AuthenticatedRequest, res: Response
       const profile = await prisma.psychologistProfile.findUnique({ where: { userId } });
       if (!profile) throw new AppError('No posees perfil de psicólogo', 404);
       where.psychologistId = profile.id;
+      where.AND = [{ OR: [{ price: 0 }, { payment: { status: 'SUCCEEDED' } }, { status: { in: ['CANCELLED', 'COMPLETED', 'NO_SHOW'] } }] }];
     } else { where.userId = userId; }
     const appointments = await prisma.appointment.findMany({ where, orderBy: { startAt: 'desc' }, include: details });
     res.status(200).json({ status: 'success', data: { appointments: appointments.map(a => appointmentView(a, userId)) } });
@@ -114,13 +117,15 @@ export const updateAppointmentStatus = async (req: AuthenticatedRequest, res: Re
     const { status, cancellationReason } = parsed.data;
     const userId = req.user!.userId;
     const admin = isAdministrator(req.user!.roles);
-    const { appointment, updated } = await serializable(async tx => {
+    const { appointment, updated, changed } = await serializable(async tx => {
       const appointment = await tx.appointment.findUnique({ where: { id: req.params.id }, include: details });
       if (!appointment) throw new AppError('Cita no encontrada', 404);
       const professional = appointment.psychologist.userId === userId;
       if (appointment.userId !== userId && !professional && !admin) throw new AppError('No tienes permisos para modificar esta cita', 403);
+      if (status === 'CANCELLED' && appointment.status === 'CANCELLED') return { appointment, updated: appointment, changed: false };
       assertAppointmentTransition(appointment.status, status, professional, admin, appointment.consultation?.status, appointment.endAt);
       if (status === 'CONFIRMED') {
+        await requirePaid(tx, appointment);
         await requireProfessional(tx, appointment.psychologistId);
         if (appointment.startAt.getTime() <= Date.now()) throw new AppError('No se pueden confirmar solicitudes vencidas', 409);
       }
@@ -131,9 +136,9 @@ export const updateAppointmentStatus = async (req: AuthenticatedRequest, res: Re
       if (status === 'CANCELLED') {
         await processAppointmentRefund(tx, appointment.id, cancellationReason);
       }
-      return { appointment, updated };
+      return { appointment, updated, changed: true };
     });
-    if (status === 'CONFIRMED' || status === 'CANCELLED') {
+    if (changed && (status === 'CONFIRMED' || status === 'CANCELLED')) {
       await sendNotification({
         userId: userId === appointment.userId ? appointment.psychologist.userId : appointment.userId,
         title: status === 'CONFIRMED' ? 'Cita confirmada' : 'Cita cancelada',

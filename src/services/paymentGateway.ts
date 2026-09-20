@@ -1,5 +1,8 @@
 import crypto from 'crypto';
 import { AppError } from '../middlewares/errorMiddleware';
+import prisma from '../config/db';
+import { Prisma } from '@prisma/client';
+import { serializable } from './clinicalPolicy';
 
 export interface CardDetails {
   number: string;
@@ -36,6 +39,7 @@ export interface PaymentGatewayChargeResult {
 }
 
 export interface PaymentGatewayRefundParams {
+  idempotencyKey: string;
   transactionId: string;
   amount?: number;
   reason?: string;
@@ -49,13 +53,15 @@ export interface PaymentGatewayRefundResult {
 }
 
 export interface IPaymentGateway {
+  lookupCharge(key: string): Promise<PaymentGatewayChargeResult | null>;
   charge(params: PaymentGatewayChargeParams): Promise<PaymentGatewayChargeResult>;
   refund(params: PaymentGatewayRefundParams): Promise<PaymentGatewayRefundResult>;
 }
 
 export function detectCardBrand(cleanNumber: string): string {
   if (/^4/.test(cleanNumber)) return 'VISA';
-  if (/^(5[1-5]|2[2-7])/.test(cleanNumber)) return 'MASTERCARD';
+  const bin = Number(cleanNumber.slice(0, 4));
+  if (/^5[1-5]/.test(cleanNumber) || (bin >= 2221 && bin <= 2720)) return 'MASTERCARD';
   if (/^3[47]/.test(cleanNumber)) return 'AMEX';
   return 'OTHER';
 }
@@ -76,15 +82,40 @@ function luhnCheck(numStr: string): boolean {
 }
 
 export class MockPaymentGateway implements IPaymentGateway {
+  async lookupCharge(key: string): Promise<PaymentGatewayChargeResult | null> {
+    const operation = await prisma.mockGatewayOperation.findUnique({ where: { key: `charge:${key}` } });
+    return operation ? operation.result as unknown as PaymentGatewayChargeResult : null;
+  }
+
   async charge(params: PaymentGatewayChargeParams): Promise<PaymentGatewayChargeResult> {
+    if (!params.idempotencyKey) throw new AppError('Se requiere una llave de idempotencia', 400);
+    const key = `charge:${params.idempotencyKey}`;
+    const existing = await this.lookupCharge(params.idempotencyKey);
+    if (existing) return existing;
+    // Simulation has no external side effects. The unique row IS the mock operation.
+    const result = await this.simulateCharge(params);
+    const operation = await serializable(async tx => {
+      const previous = await tx.mockGatewayOperation.findUnique({ where: { key } });
+      if (previous) return previous;
+      const attempt = await tx.paymentAttempt.findUnique({ where: { idempotencyKey: params.idempotencyKey } });
+      if (!attempt || attempt.status !== 'PROCESSING') throw new AppError('Intento cerrado', 409);
+      return tx.mockGatewayOperation.create({ data: { key, result: result as unknown as Prisma.InputJsonValue } });
+    });
+    return operation.result as unknown as PaymentGatewayChargeResult;
+  }
+
+  private async simulateCharge(params: PaymentGatewayChargeParams): Promise<PaymentGatewayChargeResult> {
     const { amount, currency = 'MXN', card } = params;
     void currency;
 
-    if (!amount || amount <= 0) {
+    if (!Number.isFinite(amount) || amount <= 0) {
       throw new AppError('El monto debe ser un número positivo', 400);
     }
 
     const cleanNumber = (card.number || '').replace(/[\s-]/g, '');
+    if (!['4242424242424242', '4000000000000002', '4000000000000005', '5555555555554444', '378282246310005'].includes(cleanNumber)) {
+      return { success: false, status: 'FAILED', transactionId: '', cardBrand: 'OTHER', cardLast4: '', declineCode: 'TEST_CARD_REQUIRED', errorMessage: 'Simulador: utiliza únicamente las tarjetas de prueba indicadas.' };
+    }
     if (!/^\d{13,19}$/.test(cleanNumber)) {
       return {
         success: false,
@@ -161,7 +192,7 @@ export class MockPaymentGateway implements IPaymentGateway {
     }
 
     // Check Luhn algorithm for realistic testing (unless test prefix 4000 or 4242)
-    if (!cleanNumber.startsWith('4242') && !cleanNumber.startsWith('4000') && !luhnCheck(cleanNumber)) {
+    if (!luhnCheck(cleanNumber)) {
       return {
         success: false,
         status: 'FAILED',
@@ -198,17 +229,21 @@ export class MockPaymentGateway implements IPaymentGateway {
       };
     }
 
-    return {
+    const result: PaymentGatewayRefundResult = {
       success: true,
       status: 'REFUNDED',
-      refundId: `re_mock_${crypto.randomUUID()}`,
+      refundId: `re_mock_${crypto.createHash('sha256').update(params.idempotencyKey).digest('hex')}`,
     };
+    const key = `refund:${params.idempotencyKey}`;
+    const operation = await prisma.mockGatewayOperation.upsert({ where: { key }, update: {}, create: { key, result: result as unknown as Prisma.InputJsonValue } });
+    return operation.result as unknown as PaymentGatewayRefundResult;
   }
 }
 
 let gatewayInstance: IPaymentGateway | null = null;
 
 export function getPaymentGateway(): IPaymentGateway {
+  if (process.env.NODE_ENV === 'production') throw new AppError('Los pagos simulados están deshabilitados en producción', 503);
   if (!gatewayInstance) {
     gatewayInstance = new MockPaymentGateway();
   }

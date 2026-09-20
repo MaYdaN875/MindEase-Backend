@@ -1,47 +1,27 @@
 import { Prisma } from '@prisma/client';
+import prisma from '../config/db';
 import { getPaymentGateway } from './paymentGateway';
-import { sendNotification } from './notificationService';
+import { serializable } from './clinicalPolicy';
 
-export async function processAppointmentRefund(
-  tx: Prisma.TransactionClient,
-  appointmentId: string,
-  reason?: string
-): Promise<boolean> {
-  const payment = await tx.payment.findUnique({
-    where: { appointmentId },
-  });
+// Only durable work is queued in the caller's transaction, never external requests.
+export async function processAppointmentRefund(tx: Prisma.TransactionClient, appointmentId: string, reason?: string): Promise<boolean> {
+  const result = await tx.payment.updateMany({ where: { appointmentId, status: 'SUCCEEDED' }, data: { status: 'REFUND_PENDING', refundReason: reason || 'Cancelación de cita' } });
+  return result.count > 0;
+}
 
-  if (!payment || payment.status !== 'SUCCEEDED') {
-    return false; // No paid transaction to refund
+export async function processPendingRefunds(paymentId?: string) {
+  const payments = await prisma.payment.findMany({ where: { status: 'REFUND_PENDING', ...(paymentId ? { id: paymentId } : {}) }, orderBy: { updatedAt: 'asc' }, take: 100 });
+  for (const payment of payments) {
+    try {
+      if (!payment.transactionId) throw new Error('Missing charge reference');
+      const result = await getPaymentGateway().refund({ transactionId: payment.transactionId, amount: Number(payment.amount), reason: payment.refundReason || 'Cancelación', idempotencyKey: `refund:${payment.id}:full` });
+      if (!result.success) throw new Error('Refund not confirmed');
+      await serializable(async tx => {
+        const updated = await tx.payment.updateMany({ where: { id: payment.id, status: 'REFUND_PENDING' }, data: { status: 'REFUNDED', refundId: result.refundId, refundedAt: new Date(), refundError: null, refundAttempts: { increment: 1 } } });
+        if (updated.count) await tx.notification.create({ data: { userId: payment.patientId, title: 'Reembolso de prueba procesado', content: 'El reembolso completo ha sido confirmado por el simulador.', type: 'SYSTEM', referenceId: payment.appointmentId } });
+      });
+    } catch {
+      await prisma.payment.updateMany({ where: { id: payment.id, status: 'REFUND_PENDING' }, data: { refundAttempts: { increment: 1 }, refundError: 'Pendiente de conciliación; se reintentará automáticamente' } });
+    }
   }
-
-  const gateway = getPaymentGateway();
-  const refundResult = await gateway.refund({
-    transactionId: payment.transactionId || `ch_unknown_${payment.id}`,
-    amount: payment.amount,
-    reason: reason || 'Cancelación de cita',
-  });
-
-  if (refundResult.success) {
-    await tx.payment.update({
-      where: { id: payment.id },
-      data: {
-        status: 'REFUNDED',
-        refundReason: reason || 'Cancelación de cita',
-        refundedAt: new Date(),
-      },
-    });
-
-    await sendNotification({
-      userId: payment.patientId,
-      title: 'Reembolso procesado',
-      content: `Se ha emitido el reembolso de $${payment.amount.toFixed(2)} ${payment.currency} por la cancelación de tu consulta.`,
-      type: 'SYSTEM',
-      referenceId: appointmentId,
-    });
-
-    return true;
-  }
-
-  return false;
 }

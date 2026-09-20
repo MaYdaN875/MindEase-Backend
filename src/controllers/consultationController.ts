@@ -5,6 +5,7 @@ import { AppError } from '../middlewares/errorMiddleware';
 import prisma from '../config/db';
 import { sendNotification } from '../services/notificationService';
 import { consultationView, requireProfessional, serializable } from '../services/clinicalPolicy';
+import { requirePaid } from '../services/paymentWorkflow';
 
 export const getConsultation = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -28,6 +29,7 @@ export const startConsultation = async (req: AuthenticatedRequest, res: Response
       if (!appointment?.consultation) throw new AppError('Consulta no encontrada', 404);
       if (appointment.psychologist.userId !== req.user!.userId) throw new AppError('Solo el profesional tratante puede iniciar la consulta', 403);
       await requireProfessional(tx, appointment.psychologistId);
+      await requirePaid(tx, appointment);
       if (appointment.status !== 'CONFIRMED' || appointment.consultation.status !== 'SCHEDULED') throw new AppError('Solo puede iniciarse una cita confirmada con consulta programada', 409);
       if (Date.now() < appointment.startAt.getTime() - 15 * 60000 || Date.now() >= appointment.endAt.getTime()) throw new AppError('La consulta puede iniciarse desde 15 minutos antes de la cita y antes de su hora de fin', 409);
       const consultation = await tx.consultation.update({ where: { appointmentId: appointment.id }, data: { status: 'IN_PROGRESS', startedAt: new Date(), meetingUrl: parsed.data.meetingUrl ?? appointment.consultation.meetingUrl } });
@@ -45,6 +47,7 @@ export const completeConsultation = async (req: AuthenticatedRequest, res: Respo
       if (!appointment?.consultation) throw new AppError('Consulta no encontrada', 404);
       if (appointment.psychologist.userId !== req.user!.userId) throw new AppError('Solo el profesional tratante puede finalizar la consulta', 403);
       await requireProfessional(tx, appointment.psychologistId);
+      await requirePaid(tx, appointment);
       if (appointment.status !== 'CONFIRMED' || appointment.consultation.status !== 'IN_PROGRESS') throw new AppError('Solo puede finalizarse una consulta en curso', 409);
       const consultation = await tx.consultation.update({ where: { appointmentId: appointment.id }, data: { status: 'COMPLETED', endedAt: new Date() } });
       await tx.appointment.update({ where: { id: appointment.id }, data: { status: 'COMPLETED' } });

@@ -1,4 +1,4 @@
-import prisma from '../config/db';
+import { serializable } from './clinicalPolicy';
 
 export function maskClabe(clabe: string): string {
   if (!clabe) return '';
@@ -26,7 +26,7 @@ export interface TransactionSummaryItem {
   netAmount: number;
   currency: string;
   appointmentStatus: string;
-  fundStatus: 'HELD' | 'AVAILABLE';
+  fundStatus: 'HELD' | 'AVAILABLE' | 'REVIEW';
   cardLast4?: string | null;
   cardBrand?: string | null;
 }
@@ -35,6 +35,7 @@ export interface PsychologistFinancials {
   psychologistId: string;
   currency: string;
   availableBalance: number;       // Liberado tras consulta COMPLETED y no retirado
+  reviewBalance: number;
   heldBalance: number;            // En custodia (citas pagadas futuras/confirmadas no concluidas)
   pendingPayoutBalance: number;   // Solicitudes de retiro en proceso (reserva de saldo)
   totalWithdrawn: number;         // Retiros completados históricamente
@@ -46,11 +47,13 @@ export interface PsychologistFinancials {
 }
 
 export async function getPsychologistFinancials(psychologistId: string): Promise<PsychologistFinancials> {
+  return serializable(async tx => {
   // Query all succeeded payments for this psychologist
-  const payments = await prisma.payment.findMany({
+  const payments = await tx.payment.findMany({
     where: {
       psychologistId,
       status: 'SUCCEEDED',
+      currency: 'MXN',
     },
     include: {
       appointment: {
@@ -59,6 +62,7 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
           status: true,
           startAt: true,
           endAt: true,
+          consultation: { select: { endedAt: true } },
           user: {
             select: {
               name: true,
@@ -72,8 +76,8 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
   });
 
   // Query all payout requests
-  const payouts = await prisma.payoutRequest.findMany({
-    where: { psychologistId },
+  const payouts = await tx.payoutRequest.findMany({
+    where: { psychologistId, currency: 'MXN' },
     orderBy: { requestedAt: 'desc' },
   });
 
@@ -81,29 +85,32 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
   let lifetimePlatformFees = 0;
   let lifetimeNetEarnings = 0;
   let heldBalance = 0;
+  let reviewBalance = 0;
 
   const monthlyMap = new Map<string, { gross: number; fee: number; net: number; count: number }>();
   const recentTransactions: TransactionSummaryItem[] = [];
 
   for (const payment of payments) {
     const isCompleted = payment.appointment.status === 'COMPLETED';
-    const fundStatus: 'HELD' | 'AVAILABLE' = isCompleted ? 'AVAILABLE' : 'HELD';
+    const fundStatus: 'HELD' | 'AVAILABLE' | 'REVIEW' = isCompleted ? 'AVAILABLE' : ['PENDING', 'CONFIRMED'].includes(payment.appointment.status) ? 'HELD' : 'REVIEW';
 
     if (isCompleted) {
-      lifetimeGrossVolume = Math.round((lifetimeGrossVolume + payment.amount) * 100) / 100;
-      lifetimePlatformFees = Math.round((lifetimePlatformFees + payment.platformFee) * 100) / 100;
-      lifetimeNetEarnings = Math.round((lifetimeNetEarnings + payment.netAmount) * 100) / 100;
+      lifetimeGrossVolume = Math.round((lifetimeGrossVolume + Number(payment.amount)) * 100) / 100;
+      lifetimePlatformFees = Math.round((lifetimePlatformFees + Number(payment.platformFee)) * 100) / 100;
+      lifetimeNetEarnings = Math.round((lifetimeNetEarnings + Number(payment.netAmount)) * 100) / 100;
 
-      const dateStr = payment.createdAt.toISOString();
+      const dateStr = (payment.appointment.consultation?.endedAt ?? payment.appointment.endAt).toISOString();
       const monthKey = dateStr.slice(0, 7); // "YYYY-MM"
       const existing = monthlyMap.get(monthKey) || { gross: 0, fee: 0, net: 0, count: 0 };
-      existing.gross = Math.round((existing.gross + payment.amount) * 100) / 100;
-      existing.fee = Math.round((existing.fee + payment.platformFee) * 100) / 100;
-      existing.net = Math.round((existing.net + payment.netAmount) * 100) / 100;
+      existing.gross = Math.round((existing.gross + Number(payment.amount)) * 100) / 100;
+      existing.fee = Math.round((existing.fee + Number(payment.platformFee)) * 100) / 100;
+      existing.net = Math.round((existing.net + Number(payment.netAmount)) * 100) / 100;
       existing.count += 1;
       monthlyMap.set(monthKey, existing);
+    } else if (fundStatus === 'REVIEW') {
+      reviewBalance = Math.round((reviewBalance + Number(Number(payment.netAmount))) * 100) / 100;
     } else {
-      heldBalance = Math.round((heldBalance + payment.netAmount) * 100) / 100;
+      heldBalance = Math.round((heldBalance + Number(payment.netAmount)) * 100) / 100;
     }
 
     recentTransactions.push({
@@ -111,9 +118,9 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
       appointmentId: payment.appointmentId,
       createdAt: payment.createdAt.toISOString(),
       patientName: payment.appointment.user.name,
-      grossAmount: payment.amount,
-      platformFee: payment.platformFee,
-      netAmount: payment.netAmount,
+      grossAmount: Number(payment.amount),
+      platformFee: Number(payment.platformFee),
+      netAmount: Number(payment.netAmount),
       currency: payment.currency,
       appointmentStatus: payment.appointment.status,
       fundStatus,
@@ -128,14 +135,14 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
 
   for (const payout of payouts) {
     if (payout.status === 'REQUESTED' || payout.status === 'PROCESSING') {
-      pendingPayoutBalance = Math.round((pendingPayoutBalance + payout.amount) * 100) / 100;
+      pendingPayoutBalance = Math.round((pendingPayoutBalance + Number(payout.amount)) * 100) / 100;
     } else if (payout.status === 'COMPLETED') {
-      totalWithdrawn = Math.round((totalWithdrawn + payout.amount) * 100) / 100;
+      totalWithdrawn = Math.round((totalWithdrawn + Number(payout.amount)) * 100) / 100;
     }
   }
 
   const rawAvailable = lifetimeNetEarnings - pendingPayoutBalance - totalWithdrawn;
-  const availableBalance = Math.max(0, Math.round(rawAvailable * 100) / 100);
+  const availableBalance = Math.round(rawAvailable * 100) / 100;
 
   const monthsEs = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
   const monthlyBreakdown: MonthlyEarningsBreakdown[] = Array.from(monthlyMap.entries())
@@ -158,6 +165,7 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
     currency: 'MXN',
     availableBalance,
     heldBalance,
+    reviewBalance,
     pendingPayoutBalance,
     totalWithdrawn,
     lifetimeNetEarnings,
@@ -166,4 +174,5 @@ export async function getPsychologistFinancials(psychologistId: string): Promise
     monthlyBreakdown,
     recentTransactions,
   };
+  });
 }
