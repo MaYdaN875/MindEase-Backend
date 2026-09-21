@@ -83,3 +83,45 @@ export const communityUpload = multer({
 });
 export { communityUploadDir };
 
+// Support tickets attachments storage (screenshots, receipts, logs)
+const supportUploadDir = path.join(process.cwd(), 'uploads', 'support');
+if (!fs.existsSync(supportUploadDir)) {
+  fs.mkdirSync(supportUploadDir, { recursive: true });
+}
+
+const supportStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, supportUploadDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const uniqueName = `${crypto.randomUUID()}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const ALLOWED_SUPPORT_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'application/pdf',
+];
+
+const supportFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  if (ALLOWED_SUPPORT_MIME_TYPES.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new AppError('Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF) y documentos PDF.', 400));
+  }
+};
+
+export const supportUpload = multer({
+  storage: supportStorage,
+  fileFilter: supportFileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit per attachment
+  },
+});
+export { supportUploadDir };
+

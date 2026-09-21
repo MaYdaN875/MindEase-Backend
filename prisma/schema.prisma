@@ -41,7 +41,14 @@ model User {
   moderatedPosts      CommunityPost[]             @relation("PostModerator")
   reportedItems       CommunityReport[]           @relation("UserReports")
   reviewedReports     CommunityReport[]           @relation("ReportReviewer")
+  createdTickets      SupportTicket[]             @relation("UserTickets")
+  assignedTickets     SupportTicket[]             @relation("AssignedTickets")
+  ticketMessages      TicketMessage[]
+  filedUserReports    UserReport[]                @relation("UserReporter")
+  receivedUserReports UserReport[]                @relation("ReportedUser")
+  investigatedReports UserReport[]                @relation("ReportInvestigator")
 }
+
 
 model Role {
   id        String     @id @default(uuid())
@@ -248,8 +255,10 @@ model Appointment {
   updatedAt          DateTime            @updatedAt
   consultation       Consultation?
   payment            Payment?
+  userReports        UserReport[]
 
   @@index([psychologistId, startAt])
+
   @@index([userId, startAt])
 }
 
@@ -540,4 +549,120 @@ model CommunityReport {
   @@unique([reporterId, commentId])
   @@index([status, createdAt])
 }
+
+enum TicketSource {
+  USER
+  USER_REPORT
+  PAYMENT
+  APPOINTMENT
+  SYSTEM
+}
+
+enum TicketCategory {
+  ACCOUNT
+  APPOINTMENT
+  PAYMENT
+  PSYCHOLOGIST
+  TECHNICAL
+  REPORT
+  OTHER
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_USER
+  RESOLVED
+  CLOSED
+}
+
+enum UserReportReason {
+  UNPROFESSIONAL_CONDUCT
+  HARASSMENT
+  FRAUD_OR_SCAM
+  IMPERSONATION
+  NO_SHOW_DISPUTE
+  OTHER
+}
+
+enum UserReportStatus {
+  PENDING
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+model SupportTicket {
+  id              String          @id @default(uuid())
+  ticketNumber    Int             @default(autoincrement())
+  userId          String
+  user            User            @relation("UserTickets", fields: [userId], references: [id], onDelete: Cascade)
+  assignedToId    String?
+  assignedTo      User?           @relation("AssignedTickets", fields: [assignedToId], references: [id], onDelete: SetNull)
+  source          TicketSource    @default(USER)
+  category        TicketCategory
+  priority        TicketPriority  @default(MEDIUM)
+  status          TicketStatus    @default(OPEN)
+  subject         String
+  referenceType   String?         // "APPOINTMENT", "PAYMENT", "USER_REPORT"
+  referenceId     String?
+  firstResponseAt DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  messages        TicketMessage[]
+  userReports     UserReport[]
+
+  @@index([userId, status])
+  @@index([assignedToId, status])
+  @@index([status, priority])
+  @@index([source])
+}
+
+model TicketMessage {
+  id             String        @id @default(uuid())
+  ticketId       String
+  ticket         SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User          @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  content        String
+  isInternalNote Boolean       @default(false)
+  attachments    String[]      @default([])
+  createdAt      DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+model UserReport {
+  id             String           @id @default(uuid())
+  reporterId     String
+  reporter       User             @relation("UserReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUserId String
+  reportedUser   User             @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  appointmentId  String?
+  appointment    Appointment?     @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  reason         UserReportReason
+  description    String
+  evidenceUrls   String[]         @default([])
+  status         UserReportStatus @default(PENDING)
+  reviewedById   String?
+  reviewedBy     User?            @relation("ReportInvestigator", fields: [reviewedById], references: [id], onDelete: SetNull)
+  moderatorNotes String?
+  ticketId       String?
+  ticket         SupportTicket?   @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([status, createdAt])
+  @@index([reportedUserId])
+}
+
 
