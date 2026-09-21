@@ -5,11 +5,14 @@ import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
 import psychologistRoutes from './routes/psychologistRoutes';
 import adminRoutes from './routes/adminRoutes';
+import path from 'path';
 import appointmentRoutes from './routes/appointmentRoutes';
 import consultationRoutes from './routes/consultationRoutes';
 import notificationRoutes from './routes/notificationRoutes';
 import paymentRoutes from './routes/paymentRoutes';
+import communityRoutes from './routes/communityRoutes';
 import { errorHandler } from './middlewares/errorMiddleware';
+
 
 dotenv.config();
 
@@ -17,6 +20,9 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Serve static uploaded files (community media, documents, images)
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Base health check
 app.get('/health', (_req, res) => {
@@ -32,6 +38,9 @@ app.use('/api/appointments', appointmentRoutes);
 app.use('/api/consultations', consultationRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/community', communityRoutes);
+
+
 
 // 404 Not Found fallback in JSON
 app.use((req, res) => {

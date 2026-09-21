@@ -1,16 +1,17 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { Request } from 'express';
 import { AppError } from './errorMiddleware';
 
+// Private documents storage (psychologist credentials, etc.)
 const uploadDir = path.join(process.cwd(), 'storage', 'private_documents');
-
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-const storage = multer.diskStorage({
+const privateStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadDir);
   },
@@ -21,10 +22,9 @@ const storage = multer.diskStorage({
   },
 });
 
-const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+const privateFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const allowedTypes = ['.pdf', '.jpg', '.jpeg', '.png'];
   const ext = path.extname(file.originalname).toLowerCase();
-
   if (allowedTypes.includes(ext)) {
     cb(null, true);
   } else {
@@ -33,10 +33,53 @@ const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFil
 };
 
 export const upload = multer({
-  storage,
-  fileFilter,
+  storage: privateStorage,
+  fileFilter: privateFileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit
   },
 });
 export { uploadDir };
+
+// Public community uploads storage (images, educational PDFs)
+const communityUploadDir = path.join(process.cwd(), 'uploads', 'community');
+if (!fs.existsSync(communityUploadDir)) {
+  fs.mkdirSync(communityUploadDir, { recursive: true });
+}
+
+const communityStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, communityUploadDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const uniqueName = `${crypto.randomUUID()}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const ALLOWED_COMMUNITY_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'application/pdf',
+];
+
+const communityFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  if (ALLOWED_COMMUNITY_MIME_TYPES.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new AppError('Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF) y documentos PDF.', 400));
+  }
+};
+
+export const communityUpload = multer({
+  storage: communityStorage,
+  fileFilter: communityFileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB
+  },
+});
+export { communityUploadDir };
+

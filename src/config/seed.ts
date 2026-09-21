@@ -42,6 +42,25 @@ export const seedDatabase = async (): Promise<void> => {
       });
     }
 
+    const COMMUNITY_CATEGORIES = [
+      { name: 'Ansiedad', slug: 'ansiedad', description: 'Canales dedicados al manejo de la ansiedad, crisis de pánico y relajación.' },
+      { name: 'Depresión', slug: 'depresion', description: 'Estrategias para el afrontamiento del estado de ánimo y motivación.' },
+      { name: 'Mindfulness', slug: 'mindfulness', description: 'Prácticas de atención plena, meditación y bienestar cotidiano.' },
+      { name: 'Autoestima', slug: 'autoestima', description: 'Construcción del autoconcepto, seguridad personal y límites saludables.' },
+      { name: 'Duelo y Pérdida', slug: 'duelo', description: 'Procesos de pérdida, despedida y resignificación.' },
+      { name: 'Relaciones', slug: 'relaciones', description: 'Comunicación asertiva, pareja, dinámicas familiares y apego.' },
+      { name: 'Estrés Laboral', slug: 'estres-laboral', description: 'Prevención del burnout, productividad consciente y balance vida-trabajo.' },
+    ];
+
+    console.log('Seeding default community categories...');
+    for (const cat of COMMUNITY_CATEGORIES) {
+      await prisma.communityCategory.upsert({
+        where: { slug: cat.slug },
+        update: { name: cat.name, description: cat.description },
+        create: { name: cat.name, slug: cat.slug, description: cat.description },
+      });
+    }
+
     console.log('Database seeded successfully.');
   } catch (error) {
     console.error('Error seeding database:', error);

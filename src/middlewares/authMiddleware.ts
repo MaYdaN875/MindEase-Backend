@@ -34,3 +34,30 @@ export const authMiddleware = async (
     } else { next(error); }
   }
 };
+
+export const optionalAuthMiddleware = async (
+  req: AuthenticatedRequest,
+  _res: Response,
+  next: NextFunction
+): Promise<void> => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return next();
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = verifyToken(token);
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      include: { userRoles: { include: { role: true } } },
+    });
+    if (user && user.status === 'ACTIVE') {
+      req.user = { userId: user.id, roles: user.userRoles.map(ur => ur.role.name) };
+    }
+  } catch (_e) {
+    // Silently proceed for optional auth
+  }
+  next();
+};
+
