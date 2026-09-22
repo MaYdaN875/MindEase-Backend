@@ -35,6 +35,8 @@ services:
         condition: service_healthy
     volumes:
       - ./storage:/usr/src/app/storage
+      # Legacy URLs remain available only through the authorized media controller.
+      - ./storage/legacy_uploads:/usr/src/app/uploads:ro
     # Schema changes are an explicit deployment step, never implicit data loss.
     command: node dist/server.js
 

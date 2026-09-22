@@ -4,6 +4,8 @@ import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { PostMediaType, PostStatus } from '@prisma/client';
+import { saveMedia, validateMediaReferences } from '../services/mediaPolicy';
+import { requireProfessional, serializable } from '../services/clinicalPolicy';
 
 const postMediaSchema = z.object({
   type: z.nativeEnum(PostMediaType),
@@ -43,7 +45,10 @@ export const uploadPostMedia = async (req: AuthenticatedRequest, res: Response, 
 
     const isPdf = req.file.mimetype === 'application/pdf';
     const mediaType: PostMediaType = isPdf ? PostMediaType.DOCUMENT : PostMediaType.IMAGE;
-    const fileUrl = `/uploads/community/${req.file.filename}`;
+    const profile = await prisma.psychologistProfile.findUnique({ where: { userId: req.user!.userId } });
+    if (!profile) throw new AppError('Se requiere perfil profesional verificado', 403);
+    await requireProfessional(prisma, profile.id);
+    const fileUrl = await saveMedia(req.file, req.user!.userId, 'community');
 
     res.status(200).json({
       status: 'success',
@@ -126,6 +131,8 @@ export const createPost = async (req: AuthenticatedRequest, res: Response, next:
     }
 
     const isPublished = status === 'PUBLISHED';
+    if (!isAdmin) await requireProfessional(prisma, channel.psychologistId);
+    await validateMediaReferences(media.flatMap(m => [m.url, m.thumbnailUrl]), userId, 'community');
 
     const post: any = await prisma.communityPost.create({
       data: {
@@ -485,6 +492,10 @@ export const updatePost = async (req: AuthenticatedRequest, res: Response, next:
     }
 
     const { title, content, tags, status, media } = parsed.data;
+    if (!isAdmin) await requireProfessional(prisma, post.channel.psychologistId);
+    if (post.status === 'HIDDEN' || post.hiddenById) throw new AppError('Publicacion bajo moderacion: solo el endpoint de moderacion puede reactivarla', 409);
+    if (!post.channel.isActive) throw new AppError('El canal no esta activo', 409);
+    if (media) await validateMediaReferences(media.flatMap(m => [m.url, m.thumbnailUrl]), userId, 'community');
 
     // Check if status is transitioning to PUBLISHED
     let publishedAt = post.publishedAt;
@@ -495,7 +506,10 @@ export const updatePost = async (req: AuthenticatedRequest, res: Response, next:
     }
 
     // Execute update in transaction if media is included
-    const updated: any = await prisma.$transaction(async tx => {
+    const updated: any = await serializable(async tx => {
+      const current = await tx.communityPost.findUniqueOrThrow({ where: { id }, include: { channel: true } });
+      if (current.status === 'HIDDEN' || current.hiddenById || !current.channel.isActive) throw new AppError('El contenido cambio o esta bajo moderacion', 409);
+      if (!isAdmin) await requireProfessional(tx, current.channel.psychologistId);
       if (media) {
         await tx.postMedia.deleteMany({ where: { postId: id } });
         await tx.postMedia.createMany({

@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { TicketCategory, TicketPriority, TicketSource, TicketStatus } from '@prisma/client';
 import { sendNotification } from '../services/notificationService';
+import { validateMediaReferences } from '../services/mediaPolicy';
 
 const assignTicketSchema = z.object({
   agentId: z.string().trim().nullable(),
@@ -297,6 +298,7 @@ export const addAgentMessage = async (req: AuthenticatedRequest, res: Response, 
     }
 
     const { content, isInternalNote, attachments } = parsed.data;
+    await validateMediaReferences(attachments, agentId, 'support');
 
     const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
     if (!ticket) {

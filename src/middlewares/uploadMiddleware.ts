@@ -1,7 +1,6 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
 import { Request } from 'express';
 import { AppError } from './errorMiddleware';
 
@@ -41,87 +40,10 @@ export const upload = multer({
 });
 export { uploadDir };
 
-// Public community uploads storage (images, educational PDFs)
-const communityUploadDir = path.join(process.cwd(), 'uploads', 'community');
-if (!fs.existsSync(communityUploadDir)) {
-  fs.mkdirSync(communityUploadDir, { recursive: true });
-}
-
-const communityStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, communityUploadDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const uniqueName = `${crypto.randomUUID()}${ext}`;
-    cb(null, uniqueName);
-  },
+// Validate actual bytes before persisting community/support uploads.
+const mediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 10, parts: 12 },
 });
-
-const ALLOWED_COMMUNITY_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'application/pdf',
-];
-
-const communityFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  if (ALLOWED_COMMUNITY_MIME_TYPES.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new AppError('Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF) y documentos PDF.', 400));
-  }
-};
-
-export const communityUpload = multer({
-  storage: communityStorage,
-  fileFilter: communityFileFilter,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
-  },
-});
-export { communityUploadDir };
-
-// Support tickets attachments storage (screenshots, receipts, logs)
-const supportUploadDir = path.join(process.cwd(), 'uploads', 'support');
-if (!fs.existsSync(supportUploadDir)) {
-  fs.mkdirSync(supportUploadDir, { recursive: true });
-}
-
-const supportStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, supportUploadDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const uniqueName = `${crypto.randomUUID()}${ext}`;
-    cb(null, uniqueName);
-  },
-});
-
-const ALLOWED_SUPPORT_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'application/pdf',
-];
-
-const supportFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  if (ALLOWED_SUPPORT_MIME_TYPES.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new AppError('Tipo de archivo no permitido. Solo se aceptan imágenes (JPG, PNG, WEBP, GIF) y documentos PDF.', 400));
-  }
-};
-
-export const supportUpload = multer({
-  storage: supportStorage,
-  fileFilter: supportFileFilter,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit per attachment
-  },
-});
-export { supportUploadDir };
-
+export const communityUpload = mediaUpload;
+export const supportUpload = mediaUpload;

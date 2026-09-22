@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
+import { validateMediaReferences } from '../services/mediaPolicy';
 import {
   TicketCategory,
   TicketPriority,
@@ -45,6 +46,7 @@ export const createUserReport = async (req: AuthenticatedRequest, res: Response,
     }
 
     const { reportedUserId, appointmentId, reason, description, evidenceUrls } = parsed.data;
+    await validateMediaReferences(evidenceUrls, reporterId, 'support');
 
     if (reporterId === reportedUserId) {
       throw new AppError('No puedes reportarte a ti mismo', 400);

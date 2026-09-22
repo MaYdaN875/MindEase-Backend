@@ -3,6 +3,8 @@ import { z } from 'zod';
 import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
+import { validateMediaReferences } from '../services/mediaPolicy';
+import { requireProfessional } from '../services/clinicalPolicy';
 
 const channelCreateSchema = z.object({
   name: z.string().trim().min(3, 'El nombre del canal debe tener al menos 3 caracteres').max(100, 'El nombre no puede exceder 100 caracteres'),
@@ -276,6 +278,7 @@ export const createChannel = async (req: AuthenticatedRequest, res: Response, ne
     }
 
     const { name, description, categoryId, coverImageUrl, specialties } = parsed.data;
+    await validateMediaReferences([coverImageUrl], userId, 'community');
 
     const category = await prisma.communityCategory.findUnique({
       where: { id: categoryId },
@@ -351,6 +354,9 @@ export const updateChannel = async (req: AuthenticatedRequest, res: Response, ne
         throw new AppError('La categoría especificada no es válida', 400);
       }
     }
+
+    if (!isAdmin) await requireProfessional(prisma, channel.psychologistId);
+    await validateMediaReferences([parsed.data.coverImageUrl], userId, 'community');
 
     const updated = await prisma.communityChannel.update({
       where: { id },

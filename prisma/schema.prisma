@@ -649,6 +649,17 @@ model TicketMessage {
   @@index([ticketId, createdAt])
 }
 
+model MediaAsset {
+  id        String   @id @default(uuid())
+  filename  String   @unique
+  ownerId   String
+  scope     String
+  mimeType  String
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  @@index([ownerId, scope])
+}
+
 model UserReport {
   id             String           @id @default(uuid())
   reporterId     String
@@ -672,4 +683,3 @@ model UserReport {
   @@index([status, createdAt])
   @@index([reportedUserId])
 }
-

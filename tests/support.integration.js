@@ -1,5 +1,5 @@
-// Comprehensive Integration Test for Phase 6 (Support & Moderation Module)
-// Tests Blocks 6.1 through 6.5 in a real, isolated PostgreSQL schema.
+// Support & moderation integration tests (not Phase 6 Communication).
+// Runs in an isolated PostgreSQL schema.
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
@@ -96,7 +96,7 @@ async function main() {
       category: 'PAYMENT',
       priority: 'HIGH',
       content: 'Buenas tardes, noto un cobro duplicado en mi tarjeta tras agendar una cita.',
-      attachments: ['https://storage.test/recibo1.png'],
+      attachments: [],
     });
     check('user can create support ticket (201)', ticketRes.status === 201 && ticketRes.body.data.ticket.subject.includes('cobro'));
     const ticket1 = ticketRes.body.data.ticket;
@@ -234,6 +234,7 @@ async function main() {
     check('staff can escalate report to a SupportTicket (200)', escalateRes.status === 200 && escalateRes.body.data.ticket != null && escalateRes.body.data.ticket.source === 'USER_REPORT' && escalateRes.body.data.ticket.category === 'REPORT');
 
     console.log(`\n========================================`);
+    checks += await require('./media.checks')({ base, db, owner: patient2, stranger: patient1, agent: supportAgent });
     console.log(`SUPPORT MODULE: All ${checks} checks passed successfully!`);
     console.log(`========================================\n`);
 

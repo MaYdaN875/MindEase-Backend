@@ -4,6 +4,7 @@ import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { TicketCategory, TicketPriority, TicketSource, TicketStatus } from '@prisma/client';
+import { saveMedia, validateMediaReferences } from '../services/mediaPolicy';
 
 
 const ticketCreateSchema = z.object({
@@ -28,7 +29,7 @@ export const uploadSupportAttachment = async (req: AuthenticatedRequest, res: Re
       throw new AppError('No se ha subido ningún archivo adjunto', 400);
     }
 
-    const fileUrl = `/uploads/support/${req.file.filename}`;
+    const fileUrl = await saveMedia(req.file, req.user!.userId, 'support');
 
     res.status(200).json({
       status: 'success',
@@ -55,6 +56,7 @@ export const createTicket = async (req: AuthenticatedRequest, res: Response, nex
     }
 
     const { subject, category, priority, content, attachments, referenceType, referenceId } = parsed.data;
+    await validateMediaReferences(attachments, userId, 'support');
 
     const result = await prisma.$transaction(async (tx) => {
       const ticket = await tx.supportTicket.create({
@@ -300,6 +302,7 @@ export const addTicketMessage = async (req: AuthenticatedRequest, res: Response,
     }
 
     const { content, attachments } = parsed.data;
+    await validateMediaReferences(attachments, userId, 'support');
 
     // Automatic transition:
     // If ticket was WAITING_USER and user responds -> switch back to IN_PROGRESS

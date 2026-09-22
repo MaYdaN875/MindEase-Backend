@@ -5,7 +5,8 @@ import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
 import psychologistRoutes from './routes/psychologistRoutes';
 import adminRoutes from './routes/adminRoutes';
-import path from 'path';
+import { authMiddleware, optionalAuthMiddleware } from './middlewares/authMiddleware';
+import { downloadMedia, mediaAccess } from './controllers/mediaController';
 import appointmentRoutes from './routes/appointmentRoutes';
 import consultationRoutes from './routes/consultationRoutes';
 import notificationRoutes from './routes/notificationRoutes';
@@ -24,8 +25,9 @@ app.use(cors());
 app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), stripeWebhook);
 app.use(express.json());
 
-// Serve static uploaded files (community media, documents, images)
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+// Never expose storage with express.static: authorization is checked on every read.
+app.get('/uploads/:scope/:filename', optionalAuthMiddleware, downloadMedia);
+app.post('/api/media/access', authMiddleware, mediaAccess);
 
 // Base health check
 app.get('/health', (_req, res) => {

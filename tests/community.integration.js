@@ -307,6 +307,10 @@ async function main() {
       hiddenReason: 'Contenido bajo revisión médica por moderación.',
     });
     check('moderator can hide post (PostStatus.HIDDEN)', hideRes.status === 200 && hideRes.body.data.post.status === 'HIDDEN');
+    const bypassPublish = await api('PUT', `/posts/${pubPostId}`, doctor1, { status: 'PUBLISHED' });
+    check('author cannot republish moderated content', bypassPublish.status === 409);
+    const bypassDraft = await api('PUT', `/posts/${pubPostId}`, doctor1, { status: 'DRAFT' });
+    check('author cannot bypass moderation through drafts', bypassDraft.status === 409);
 
     // Verify post is no longer visible to patient1
     const postCheck = await api('GET', `/posts/${pubPostId}`, patient1);
