@@ -362,10 +362,18 @@ model PaymentAttempt {
   paymentId      String
   payment        Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   idempotencyKey String        @unique
+  provider       String        @default("MOCK")
+  providerIntentId String?     @unique
   status         PaymentStatus @default(PROCESSING)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   @@index([status, createdAt])
+}
+
+model StripeWebhookEvent {
+  id          String   @id
+  type        String
+  processedAt DateTime @default(now())
 }
 
 // Durable simulation results. Replace the mock adapter, not this table, with a real provider.
@@ -664,5 +672,4 @@ model UserReport {
   @@index([status, createdAt])
   @@index([reportedUserId])
 }
-
 

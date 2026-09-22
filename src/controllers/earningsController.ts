@@ -8,6 +8,7 @@ import { requireProfessional, serializable } from '../services/clinicalPolicy';
 
 import { cents, validClabe } from '../services/money';
 import { getPaymentGateway } from '../services/paymentGateway';
+import { paymentProvider } from '../services/stripeGateway';
 
 const payoutSchema = z.object({
   amount: z.number().positive('El monto a retirar debe ser mayor a 0'),
@@ -35,6 +36,7 @@ export const getMyEarnings = async (req: AuthenticatedRequest, res: Response, ne
 
 export const requestPayout = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (paymentProvider() === 'STRIPE') throw new AppError('Retiros deshabilitados hasta integrar Stripe Connect', 503);
     const parsed = payoutSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new AppError(parsed.error.issues[0].message, 400);

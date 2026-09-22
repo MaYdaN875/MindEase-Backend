@@ -13,6 +13,7 @@ import paymentRoutes from './routes/paymentRoutes';
 import communityRoutes from './routes/communityRoutes';
 import supportRoutes from './routes/supportRoutes';
 import { errorHandler } from './middlewares/errorMiddleware';
+import { stripeWebhook } from './controllers/stripeController';
 
 
 dotenv.config();
@@ -20,6 +21,7 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
+app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), stripeWebhook);
 app.use(express.json());
 
 // Serve static uploaded files (community media, documents, images)

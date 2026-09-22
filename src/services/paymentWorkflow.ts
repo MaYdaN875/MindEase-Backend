@@ -14,10 +14,11 @@ export async function requirePaid(tx: Prisma.TransactionClient, appointment: { i
   }
 }
 
-export async function reservePayment(userId: string, appointmentId: string, key: string) {
+export async function reservePayment(userId: string, appointmentId: string, key: string, provider = 'MOCK') {
   return serializable(async tx => {
     const existing = await tx.paymentAttempt.findUnique({ where: { idempotencyKey: key }, include: { payment: true } });
     if (existing) {
+      if (existing.provider !== provider) throw new AppError('Proveedor del intento incompatible', 409);
       if (existing.payment.patientId !== userId) throw new AppError('Acceso denegado', 403);
       if (existing.payment.appointmentId !== appointmentId) throw new AppError('La llave pertenece a otra cita', 409);
       return existing;
@@ -37,7 +38,7 @@ export async function reservePayment(userId: string, appointmentId: string, key:
       create: { ...data, appointmentId, patientId: userId, psychologistId: appointment.psychologistId, currency: appointment.currency },
       update: data,
     });
-    return tx.paymentAttempt.create({ data: { paymentId: payment.id, idempotencyKey: key }, include: { payment: true } });
+    return tx.paymentAttempt.create({ data: { paymentId: payment.id, idempotencyKey: key, provider }, include: { payment: true } });
   });
 }
 
@@ -49,7 +50,7 @@ export async function finalizePayment(attemptId: string, result: PaymentGatewayC
     if (payment.idempotencyKey !== attempt.idempotencyKey || payment.status !== 'PROCESSING') throw new AppError('El intento no corresponde al pago activo', 409);
     // Never reopen a cancelled appointment, even if cancellation raced the gateway.
     const eligible = await tx.psychologistProfile.findFirst({ where: { id: payment.psychologistId, ...eligibleProfessionalWhere }, select: { id: true } });
-    const mustRefund = !['PENDING', 'CONFIRMED'].includes(payment.appointment.status) || !eligible || payment.appointment.startAt.getTime() <= Date.now();
+    const mustRefund = !!result.refundDetected || !['PENDING', 'CONFIRMED'].includes(payment.appointment.status) || !eligible || payment.appointment.startAt.getTime() <= Date.now();
     if (result.success && mustRefund && ['PENDING', 'CONFIRMED'].includes(payment.appointment.status)) {
       await tx.appointment.update({ where: { id: payment.appointmentId }, data: { status: 'CANCELLED', cancellationReason: 'La reserva dejó de ser elegible durante el pago' } });
       await tx.consultation.updateMany({ where: { appointmentId: payment.appointmentId }, data: { status: 'CANCELLED' } });
@@ -63,7 +64,7 @@ export async function finalizePayment(attemptId: string, result: PaymentGatewayC
     if (result.success && !mustRefund) {
       const psychologist = await tx.psychologistProfile.findUniqueOrThrow({ where: { id: payment.psychologistId } });
       for (const userId of [payment.patientId, psychologist.userId]) {
-        await tx.notification.create({ data: { userId, title: 'Solicitud de cita pagada (simulación)', content: 'El pago de prueba se registró. La cita espera aprobación del profesional.', type: 'APPOINTMENT_REQUEST', referenceId: payment.appointmentId } });
+        await tx.notification.create({ data: { userId, title: 'Solicitud de cita pagada (pruebas)', content: 'El pago de prueba se registro. La cita espera aprobacion del profesional.', type: 'APPOINTMENT_REQUEST', referenceId: payment.appointmentId } });
       }
     }
     return saved;
@@ -71,10 +72,18 @@ export async function finalizePayment(attemptId: string, result: PaymentGatewayC
 }
 
 export async function recoverPayments() {
-  const { getPaymentGateway } = await import('./paymentGateway');
   const attempts = await prisma.paymentAttempt.findMany({ where: { status: 'PROCESSING' }, orderBy: { createdAt: 'asc' }, take: 100 });
   for (const attempt of attempts) {
-    const result = await getPaymentGateway().lookupCharge(attempt.idempotencyKey);
+    if (attempt.provider === 'STRIPE') {
+      try {
+        const { StripePaymentGateway } = await import('./stripeGateway');
+        const result = await new StripePaymentGateway().lookupCharge(attempt.idempotencyKey);
+        if (result) await finalizePayment(attempt.id, result);
+      } catch { console.error('Stripe reconciliation pending', attempt.id); }
+      continue;
+    }
+    const { MockPaymentGateway } = await import('./paymentGateway');
+    const result = await new MockPaymentGateway().lookupCharge(attempt.idempotencyKey);
     if (result) {
       await finalizePayment(attempt.id, result);
     } else if (attempt.createdAt.getTime() < Date.now() - 60000) {

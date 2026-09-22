@@ -20,6 +20,8 @@ services:
 
   app:
     build: .
+    env_file:
+      - .env
     container_name: mindease-app
     ports:
       - "3000:3000"

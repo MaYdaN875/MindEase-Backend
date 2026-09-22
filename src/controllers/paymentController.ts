@@ -6,6 +6,7 @@ import { AppError } from '../middlewares/errorMiddleware';
 import { paymentView } from '../services/money';
 import { reservePayment, finalizePayment } from '../services/paymentWorkflow';
 import { getPaymentGateway } from '../services/paymentGateway';
+import { paymentProvider } from '../services/stripeGateway';
 
 const checkoutSchema = z.object({
   appointmentId: z.string().uuid(), idempotencyKey: z.string().uuid(),
@@ -19,6 +20,7 @@ const checkoutSchema = z.object({
 
 export const checkout = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (paymentProvider() !== 'MOCK') throw new AppError('Utiliza el flujo de Stripe PaymentSheet', 409);
     const headerKey = req.header('idempotency-key');
     if (headerKey && req.body?.idempotencyKey && headerKey !== req.body.idempotencyKey) throw new AppError('Llaves de idempotencia inconsistentes', 400);
     const parsed = checkoutSchema.safeParse({ ...req.body, idempotencyKey: headerKey || req.body?.idempotencyKey });

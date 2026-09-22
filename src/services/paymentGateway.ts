@@ -29,6 +29,7 @@ export interface PaymentGatewayChargeParams {
 
 export interface PaymentGatewayChargeResult {
   success: boolean;
+  refundDetected?: boolean;
   transactionId: string;
   cardBrand: string;
   cardLast4: string;

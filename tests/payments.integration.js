@@ -21,7 +21,7 @@ async function main() {
   try {
     await control.$executeRawUnsafe('CREATE SCHEMA "' + schema + '"');
     execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'db', 'push', '--skip-generate', '--schema', 'tests/fixtures/pre-finance.prisma'], { env: process.env, stdio: 'pipe' });
-    for (const migration of ['20260912235900_payment_states', '20260913000000_payment_integrity']) {
+    for (const migration of ['20260912235900_payment_states', '20260913000000_payment_integrity', '20260921000000_stripe_payments']) {
       execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'db', 'execute', '--file', 'prisma/migrations/' + migration + '/migration.sql', '--schema', 'prisma/schema.prisma'], { env: process.env, stdio: 'pipe' });
     }
     check('incremental migration applies to the actual previous schema', true);
@@ -100,7 +100,7 @@ async function main() {
     const refunded = await db.payment.findUnique({ where: { appointmentId: f.id } });
     check('refund retried with persisted provider reference', refunded.status === 'REFUNDED' && refunded.refundId);
     check('concurrent refunds deduplicated', await db.mockGatewayOperation.count({ where: { key: 'refund:refund:' + refunded.id + ':full' } }) === 1);
-    check('one refund notification', await db.notification.count({ where: { referenceId: f.id, title: 'Reembolso de prueba procesado' } }) === 1);
+    check('one refund notification', await db.notification.count({ where: { referenceId: f.id, title: 'Reembolso procesado' } }) === 1);
     check('cancellation is idempotent', (await status(f, 'CANCELLED')).status === 200);
     const g = await appointment(), idle = await reservePayment(patient.id, g.id, randomUUID());
     await db.paymentAttempt.update({ where: { id: idle.id }, data: { createdAt: new Date(Date.now() - 120000) } });
