@@ -47,6 +47,7 @@ model User {
   filedUserReports    UserReport[]                @relation("UserReporter")
   receivedUserReports UserReport[]                @relation("ReportedUser")
   investigatedReports UserReport[]                @relation("ReportInvestigator")
+  aiOrientationSessions AIOrientationSession[]    @relation("UserAIOrientations")
 }
 
 
@@ -102,12 +103,14 @@ model PsychologistProfile {
   payments             Payment[]                   @relation("PsychologistPayments")
   payoutRequests       PayoutRequest[]
   channels             CommunityChannel[]
+  aiRecommendations    AIRecommendation[]
 }
 
 model Specialty {
-  id            String                  @id @default(uuid())
-  name          String                  @unique
-  psychologists PsychologistSpecialty[]
+  id                String                  @id @default(uuid())
+  name              String                  @unique
+  psychologists     PsychologistSpecialty[]
+  aiRecommendations AIRecommendation[]
 }
 
 model PsychologistSpecialty {
@@ -683,3 +686,91 @@ model UserReport {
   @@index([status, createdAt])
   @@index([reportedUserId])
 }
+
+// -------------------------------------------------------------
+// FASE AI — ORIENTACIÓN INTELIGENTE Y TRIAJE NO DIAGNÓSTICO
+// -------------------------------------------------------------
+
+enum AIOrientationStatus {
+  ACTIVE
+  COMPLETED
+  ESCALATED
+  CANCELLED
+}
+
+enum AIMessageRole {
+  USER
+  ASSISTANT
+}
+
+enum AIRiskLevel {
+  LOW
+  MODERATE
+  HIGH
+  EMERGENCY
+}
+
+model AIOrientationSession {
+  id              String                @id @default(uuid())
+  userId          String
+  user            User                  @relation("UserAIOrientations", fields: [userId], references: [id], onDelete: Cascade)
+  status          AIOrientationStatus   @default(ACTIVE)
+  riskLevel       AIRiskLevel           @default(LOW)
+  summary         String?               @db.Text
+  needsProfile    Json?
+  promptVersion   String                @default("1.0")
+  provider        String                @default("MOCK")
+  startedAt       DateTime              @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  messages        AIMessage[]
+  recommendations AIRecommendation[]
+
+  @@index([userId, status])
+  @@index([createdAt])
+}
+
+model AIMessage {
+  id        String               @id @default(uuid())
+  sessionId String
+  session   AIOrientationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      AIMessageRole
+  content   String               @db.Text
+  createdAt DateTime             @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+model AIRecommendation {
+  id             String               @id @default(uuid())
+  sessionId      String
+  session        AIOrientationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  specialtyId    String
+  specialty      Specialty            @relation(fields: [specialtyId], references: [id], onDelete: Cascade)
+  psychologistId String?
+  psychologist   PsychologistProfile? @relation(fields: [psychologistId], references: [id], onDelete: SetNull)
+  reason         String               @db.Text
+  score          Float?
+  createdAt      DateTime             @default(now())
+
+  @@index([sessionId])
+  @@index([psychologistId])
+  @@index([specialtyId])
+}
+
+model AICrisisResource {
+  id          String   @id @default(uuid())
+  countryCode String   @default("MX")
+  name        String
+  phone       String
+  url         String?
+  description String?
+  type        String   @default("GENERAL")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([countryCode, isActive])
+}
+

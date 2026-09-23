@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { listAdminAppointments, getAdminAppointment } from '../controllers/appointmentAdminController';
+import { financeSummary, financeList, financePaymentDetail } from '../controllers/financeAdminController';
 import {
   listApplications,
   getApplication,
@@ -31,6 +33,13 @@ import { listCommunityResources, saveCommunityCategory, setCommunityChannelStatu
 const router = Router();
 
 router.use(authMiddleware as any);
+router.use('/appointments', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+router.get('/appointments', checkRole(['ADMIN', 'SUPERADMIN']), listAdminAppointments);
+router.get('/appointments/:id', checkRole(['ADMIN', 'SUPERADMIN']), getAdminAppointment);
+router.use('/finance', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+router.get('/finance/summary', checkRole(['ADMIN', 'SUPERADMIN']), financeSummary);
+router.get('/finance/payments/:id', checkRole(['ADMIN', 'SUPERADMIN']), financePaymentDetail);
+router.get('/finance/:resource', checkRole(['ADMIN', 'SUPERADMIN']), financeList);
 router.get('/community/:resource', checkRole(['ADMIN', 'SUPERADMIN', 'MODERATOR']), listCommunityResources);
 router.post('/community/categories', checkRole(['ADMIN', 'SUPERADMIN']), saveCommunityCategory);
 router.patch('/community/categories/:id', checkRole(['ADMIN', 'SUPERADMIN']), saveCommunityCategory);

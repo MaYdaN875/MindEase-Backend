@@ -106,6 +106,8 @@ async function main() {
     check('patient does not receive internal notes', !(await api('GET', `/api/support/tickets/${ticket.id}`, 'USER')).body.data.ticket.messages.some(item => item.isInternalNote));
     check('patient cannot download internal attachment', (await fetch(base + internal, { headers: { Authorization: 'Bearer ' + actors.USER.token } })).status === 404);
     check('moderator opens evidence only via authorized media', (await api('POST', '/api/media/access', 'MODERATOR', { url: evidence })).status === 200);
+    await require('./financeAdmin.checks')({ db, api, actors, profile, check });
+    await require('./appointmentAdmin.checks')({ db, api, actors, profile, check });
     console.log(`ADMIN: ${checks} checks passed`);
     if (keep) {
       console.log('Browser fixture ready at http://127.0.0.1:4318/test (disposable data only)');
