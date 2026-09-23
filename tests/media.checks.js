@@ -66,6 +66,11 @@ module.exports = async function mediaChecks({ base, db, owner, stranger, agent }
     await db.user.update({ where: { id: owner.id }, data: { status: 'ACTIVE' } });
 
     const { saveMedia, canReadMedia, validateMediaReferences } = require('../src/services/mediaPolicy');
+    const moderatorContext = { userId: stranger.id, roles: ['MODERATOR'] };
+    check('moderator cannot read unrelated support uploads', !await canReadMedia(url, moderatorContext));
+    await db.userReport.create({ data: { reporterId: owner.id, reportedUserId: agent.id, reason: 'OTHER', description: 'Evidence privacy test', evidenceUrls: [url] } });
+    check('moderator can inspect conduct-report evidence', await canReadMedia(url, moderatorContext));
+    check('moderator cannot inspect unrelated internal-note attachment', !await canReadMedia(internalUrl, moderatorContext));
     const mediaUrl = await saveMedia({ buffer: png, originalname: 'image.png', mimetype: 'image/png', size: png.length }, owner.id, 'community');
     check('unpublished Community media is not public', !await canReadMedia(mediaUrl));
     check('Community uploader can access own draft media', await canReadMedia(mediaUrl, { userId: owner.id, roles: ['USER'] }));

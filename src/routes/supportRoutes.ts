@@ -15,6 +15,7 @@ import {
   updateTicketStatus,
   addAgentMessage,
   getSupportMetrics,
+  getSupportAgents,
 } from '../controllers/supportAgentController';
 import {
   createUserReport,
@@ -46,6 +47,7 @@ router.put('/agent/tickets/:id/assign', authMiddleware, assignTicket);
 router.put('/agent/tickets/:id/status', authMiddleware, updateTicketStatus);
 router.post('/agent/tickets/:id/messages', authMiddleware, addAgentMessage);
 router.get('/agent/metrics', authMiddleware, getSupportMetrics);
+router.get('/agent/agents', authMiddleware, getSupportAgents);
 
 // ========================
 // USER CONDUCT REPORTS & MODERATION

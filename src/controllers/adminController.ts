@@ -841,10 +841,7 @@ export const listNotifications = async (
 
     const notifications = await prisma.notification.findMany({
       where: {
-        OR: [
-          { userId },
-          { user: { userRoles: { some: { role: { name: { in: ['ADMIN', 'SUPERADMIN'] } } } } } },
-        ],
+        userId,
       },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -881,6 +878,9 @@ export const markNotificationRead = async (
 ): Promise<void> => {
   try {
     const { notificationId } = req.params;
+
+    const ownNotification = await prisma.notification.findFirst({ where: { id: notificationId, userId: req.user!.userId } });
+    if (!ownNotification) throw new AppError('Notificación no encontrada', 404);
 
     const notification = await prisma.notification.update({
       where: { id: notificationId },

@@ -26,10 +26,15 @@ import {
 } from '../controllers/adminController';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { checkRole } from '../middlewares/rbacMiddleware';
+import { listCommunityResources, saveCommunityCategory, setCommunityChannelStatus } from '../controllers/communityAdminController';
 
 const router = Router();
 
 router.use(authMiddleware as any);
+router.get('/community/:resource', checkRole(['ADMIN', 'SUPERADMIN', 'MODERATOR']), listCommunityResources);
+router.post('/community/categories', checkRole(['ADMIN', 'SUPERADMIN']), saveCommunityCategory);
+router.patch('/community/categories/:id', checkRole(['ADMIN', 'SUPERADMIN']), saveCommunityCategory);
+router.patch('/community/channels/:id/status', checkRole(['ADMIN', 'SUPERADMIN', 'MODERATOR']), setCommunityChannelStatus);
 
 // Dashboard & Metrics
 router.get(

@@ -355,6 +355,7 @@ export const updateChannel = async (req: AuthenticatedRequest, res: Response, ne
       }
     }
 
+    if (!isAdmin && !channel.isActive) throw new AppError('Canal desactivado: requiere revisión administrativa', 409);
     if (!isAdmin) await requireProfessional(prisma, channel.psychologistId);
     await validateMediaReferences([parsed.data.coverImageUrl], userId, 'community');
 

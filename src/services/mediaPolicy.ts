@@ -54,6 +54,9 @@ export async function canReadMedia(url: string, user?: TokenPayload): Promise<bo
   }
   if (!user) return false;
   if (parsed.scope === 'community' ? communityStaff : supportStaff) return true;
+  // A moderator can inspect evidence on conduct reports, not unrelated ticket files.
+  if (parsed.scope === 'support' && user.roles.includes('MODERATOR') &&
+      await prisma.userReport.findFirst({ where: { evidenceUrls: { has: url } }, select: { id: true } })) return true;
   const asset = await prisma.mediaAsset.findUnique({ where: { filename: parsed.filename } });
   if (asset?.scope === parsed.scope && asset.ownerId === user.userId) return true;
   if (parsed.scope === 'community') {

@@ -4,6 +4,7 @@ import prisma from '../config/db';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { ReportReason, ReportStatus, PostStatus } from '@prisma/client';
+import { serializable } from '../services/clinicalPolicy';
 
 const createReportSchema = z.object({
   channelId: z.string().uuid().optional().nullable(),
@@ -190,16 +191,14 @@ export const reviewReport = async (req: AuthenticatedRequest, res: Response, nex
       throw new AppError('Reporte no encontrado', 404);
     }
 
-    const updated = await prisma.communityReport.update({
-      where: { id },
-      data: {
-        status: parsed.data.status,
-        moderatorNotes: parsed.data.moderatorNotes || null,
-        reviewedById: reviewerId,
-      },
-      include: {
-        reviewedBy: { select: { id: true, name: true } },
-      },
+    const updated = await serializable(async tx => {
+      const current = await tx.communityReport.findUniqueOrThrow({ where: { id } });
+      const result = await tx.communityReport.update({ where: { id }, data: {
+        status: parsed.data.status, moderatorNotes: parsed.data.moderatorNotes || null, reviewedById: reviewerId,
+      }, include: { reviewedBy: { select: { id: true, name: true } } } });
+      await tx.auditLog.create({ data: { userId: reviewerId, action: 'COMMUNITY_REPORT_REVIEW',
+        details: { targetId: id, before: current.status, after: result.status, reason: parsed.data.moderatorNotes || null } } });
+      return result;
     });
 
     res.status(200).json({
@@ -238,28 +237,20 @@ export const moderatePost = async (req: AuthenticatedRequest, res: Response, nex
 
     const { action, hiddenReason } = parsed.data;
 
-    let updated;
-    if (action === 'HIDE') {
-      updated = await prisma.communityPost.update({
+    const updated = await serializable(async tx => {
+      const current = await tx.communityPost.findUniqueOrThrow({ where: { id: postId } });
+      if (!['PUBLISHED', 'HIDDEN'].includes(current.status)) throw new AppError('Solo se modera contenido publicado u ocultado; no se publican borradores desde moderación', 409);
+      const result = await tx.communityPost.update({
         where: { id: postId },
-        data: {
-          status: PostStatus.HIDDEN,
-          hiddenAt: new Date(),
-          hiddenReason,
-          hiddenById: moderatorId,
-        },
+        data: { status: action === 'HIDE' ? PostStatus.HIDDEN : PostStatus.PUBLISHED,
+          hiddenAt: action === 'HIDE' ? new Date() : null,
+          hiddenReason: action === 'HIDE' ? hiddenReason : null,
+          hiddenById: action === 'HIDE' ? moderatorId : null },
       });
-    } else {
-      updated = await prisma.communityPost.update({
-        where: { id: postId },
-        data: {
-          status: PostStatus.PUBLISHED,
-          hiddenAt: null,
-          hiddenReason: null,
-          hiddenById: null,
-        },
-      });
-    }
+      await tx.auditLog.create({ data: { userId: moderatorId, action: 'COMMUNITY_POST_MODERATE',
+        details: { targetId: postId, before: current.status, after: result.status, reason: hiddenReason } } });
+      return result;
+    });
 
     res.status(200).json({
       status: 'success',
@@ -296,13 +287,15 @@ export const moderateComment = async (req: AuthenticatedRequest, res: Response, 
 
     const { action, hiddenReason } = parsed.data;
 
-    const updated = await prisma.postComment.update({
-      where: { id: commentId },
-      data: {
-        isHidden: action === 'HIDE',
-        hiddenAt: action === 'HIDE' ? new Date() : null,
+    const updated = await serializable(async tx => {
+      const current = await tx.postComment.findUniqueOrThrow({ where: { id: commentId } });
+      const result = await tx.postComment.update({ where: { id: commentId }, data: {
+        isHidden: action === 'HIDE', hiddenAt: action === 'HIDE' ? new Date() : null,
         hiddenReason: action === 'HIDE' ? hiddenReason : null,
-      },
+      } });
+      await tx.auditLog.create({ data: { userId: req.user!.userId, action: 'COMMUNITY_COMMENT_MODERATE',
+        details: { targetId: commentId, before: current.isHidden, after: result.isHidden, reason: hiddenReason } } });
+      return result;
     });
 
     res.status(200).json({

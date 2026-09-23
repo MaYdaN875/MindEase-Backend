@@ -233,6 +233,17 @@ async function main() {
     });
     check('staff can escalate report to a SupportTicket (200)', escalateRes.status === 200 && escalateRes.body.data.ticket != null && escalateRes.body.data.ticket.source === 'USER_REPORT' && escalateRes.body.data.ticket.category === 'REPORT');
 
+    const privateNotice = await db.notification.create({ data: { userId: admin.id, title: 'Admin private notice', content: 'Not visible to other staff' } });
+    const ownNotice = await db.notification.create({ data: { userId: supportAgent.id, title: 'Support notice', content: 'Visible to its recipient' } });
+    const adminBase = new URL(base).origin + '/api/admin';
+    const noticeList = await fetch(adminBase + '/notifications', { headers: { Authorization: `Bearer ${supportAgent.token}` } });
+    const noticeData = await noticeList.json();
+    check('support notifications never include another recipient', noticeList.status === 200 && noticeData.data.notifications.every(n => n.userId === supportAgent.id));
+    const foreignRead = await fetch(adminBase + `/notifications/${privateNotice.id}/read`, { method: 'PUT', headers: { Authorization: `Bearer ${supportAgent.token}` } });
+    check('staff cannot mark foreign notification read', foreignRead.status === 404);
+    const ownRead = await fetch(adminBase + `/notifications/${ownNotice.id}/read`, { method: 'PUT', headers: { Authorization: `Bearer ${supportAgent.token}` } });
+    check('staff can mark own notification read', ownRead.status === 200);
+    check('foreign notification remains unread', !(await db.notification.findUnique({ where: { id: privateNotice.id } })).isRead);
     console.log(`\n========================================`);
     checks += await require('./media.checks')({ base, db, owner: patient2, stranger: patient1, agent: supportAgent });
     console.log(`SUPPORT MODULE: All ${checks} checks passed successfully!`);

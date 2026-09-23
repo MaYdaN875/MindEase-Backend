@@ -40,5 +40,15 @@ services:
     # Schema changes are an explicit deployment step, never implicit data loss.
     command: node dist/server.js
 
+  admin:
+    build:
+      context: ../MindEase-Admin
+    container_name: mindease-admin
+    ports:
+      - "127.0.0.1:4173:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+
 volumes:
   postgres_data:

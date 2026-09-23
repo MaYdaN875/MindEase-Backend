@@ -31,6 +31,14 @@ const ensureSupportStaff = (req: AuthenticatedRequest) => {
   }
 };
 
+export const getSupportAgents = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    ensureSupportStaff(req);
+    const agents = await prisma.user.findMany({ where: { status: 'ACTIVE', userRoles: { some: { role: { name: { in: ['SUPPORT', 'ADMIN', 'SUPERADMIN'] } } } } }, select: { id: true, name: true }, orderBy: [{ name: 'asc' }, { id: 'asc' }] });
+    res.json({ status: 'success', data: { agents } });
+  } catch (error) { next(error); }
+};
+
 // List tickets for support agent console with multiple filters
 export const getAllTickets = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -178,7 +186,7 @@ export const assignTicket = async (req: AuthenticatedRequest, res: Response, nex
         include: { userRoles: { include: { role: true } } },
       });
 
-      if (!agent) {
+      if (!agent || agent.status !== 'ACTIVE') {
         throw new AppError('El agente seleccionado no existe', 404);
       }
 
@@ -394,6 +402,7 @@ export const getSupportMetrics = async (req: AuthenticatedRequest, res: Response
       prisma.supportTicket.findMany({
         where: { firstResponseAt: { not: null } },
         select: { createdAt: true, firstResponseAt: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: 100, // sample last 100 tickets
       }),
     ]);
@@ -421,6 +430,7 @@ export const getSupportMetrics = async (req: AuthenticatedRequest, res: Response
         urgentOpenCount,
         unassignedCount,
         avgFirstResponseMinutes: avgResponseMinutes,
+        responseSampleSize: respondedTickets.length,
       },
     });
   } catch (error) {
