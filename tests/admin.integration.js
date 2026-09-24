@@ -108,6 +108,7 @@ async function main() {
     check('moderator opens evidence only via authorized media', (await api('POST', '/api/media/access', 'MODERATOR', { url: evidence })).status === 200);
     await require('./financeAdmin.checks')({ db, api, actors, profile, check });
     await require('./appointmentAdmin.checks')({ db, api, actors, profile, check });
+    await require('./jaas.checks')({ db, api, actors, profile, check });
     console.log(`ADMIN: ${checks} checks passed`);
     if (keep) {
       console.log('Browser fixture ready at http://127.0.0.1:4318/test (disposable data only)');

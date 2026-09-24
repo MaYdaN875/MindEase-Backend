@@ -6,6 +6,7 @@ import prisma from '../config/db';
 import { sendNotification } from '../services/notificationService';
 import { consultationView, requireProfessional, serializable } from '../services/clinicalPolicy';
 import { requirePaid } from '../services/paymentWorkflow';
+import { jaasConfiguration } from '../services/jaasService';
 
 export const getConsultation = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -24,6 +25,10 @@ export const startConsultation = async (req: AuthenticatedRequest, res: Response
   try {
     const parsed = startSchema.safeParse(req.body ?? {});
     if (!parsed.success) throw new AppError('Proporciona un enlace HTTPS válido', 400);
+    if (process.env.JAAS_ENABLED === 'true') {
+      jaasConfiguration();
+      if (parsed.data.meetingUrl) throw new AppError('JaaS genera la sala; no se aceptan enlaces externos', 400);
+    }
     const { appointment, consultation } = await serializable(async tx => {
       const appointment = await tx.appointment.findUnique({ where: { id: req.params.appointmentId }, include: { psychologist: true, consultation: true } });
       if (!appointment?.consultation) throw new AppError('Consulta no encontrada', 404);

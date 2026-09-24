@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { getVideoSession } from '../controllers/videoController';
 import {
   getConsultation,
   startConsultation,
@@ -10,6 +11,7 @@ import { authMiddleware } from '../middlewares/authMiddleware';
 const router = Router();
 
 router.use(authMiddleware as any);
+router.post('/:appointmentId/video-session', getVideoSession);
 
 router.get('/:appointmentId', getConsultation as any);
 router.post('/:appointmentId/start', startConsultation as any);

@@ -1,0 +1,42 @@
+const { generateKeyPairSync } = require('node:crypto');
+const jwt = require('jsonwebtoken');
+module.exports = async ({ db, api, actors, profile, check }) => {
+  const keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  process.env.JAAS_ENABLED = 'true'; process.env.JAAS_AUTH_REQUIRED_CONFIRMED = 'true';
+  process.env.JAAS_APP_ID = 'vpaas-magic-cookie-0123456789abcdef';
+  process.env.JAAS_KEY_ID = process.env.JAAS_APP_ID + '/testkey';
+  process.env.JAAS_PRIVATE_KEY = keys.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const a = await db.appointment.create({ data: { userId: actors.USER.id, psychologistId: profile.id, price: 100, status: 'CONFIRMED', startAt: new Date(Date.now() - 60000), endAt: new Date(Date.now() + 1800000),
+    consultation: { create: { status: 'IN_PROGRESS', clinicalNotes: 'SECRET_NOTES' } },
+    payment: { create: { patientId: actors.USER.id, psychologistId: profile.id, amount: 100, platformFee: 15, netAmount: 85, status: 'SUCCEEDED' } } } });
+  const route = '/api/consultations/' + a.id + '/video-session';
+  const patient = await api('POST', route, 'USER', {});
+  check('patient receives scoped JaaS session', patient.status === 200);
+  const payload = jwt.verify(patient.body.data.session.token, keys.publicKey, { algorithms: ['RS256'], audience: 'jitsi', issuer: 'chat', subject: process.env.JAAS_APP_ID });
+  check('token room exact and no wildcard', patient.body.data.session.room === process.env.JAAS_APP_ID + '/' + payload.room && payload.room !== '*' && payload.context.room.regex === false);
+  check('patient not moderator; no recording or transcription', payload.context.user.moderator === 'false' && payload.context.features.recording === false && payload.context.features.transcription === false);
+  check('short expiry and no clinical information', payload.exp - payload.iat <= 300 && !JSON.stringify(payload).includes('SECRET_NOTES') && !JSON.stringify(payload).includes(actors.USER.email));
+  const professional = await api('POST', route, 'PSYCHOLOGIST_VERIFIED', {});
+  const pro = jwt.verify(professional.body.data.session.token, keys.publicKey, { algorithms: ['RS256'] });
+  check('professional moderator in same room', pro.context.user.moderator === 'true' && pro.room === payload.room && pro.context.user.id !== payload.context.user.id);
+  for (const role of ['ADMIN', 'SUPERADMIN', 'SUPPORT', 'REVISOR', 'MODERATOR', undefined]) check(`${role || 'anonymous'} cannot join private video`, (await api('POST', route, role, {})).status === (role ? 403 : 401));
+  await db.payment.update({ where: { appointmentId: a.id }, data: { status: 'REFUND_PENDING' } });
+  check('unpaid/refunding meeting denied', (await api('POST', route, 'USER', {})).status === 409);
+  await db.payment.update({ where: { appointmentId: a.id }, data: { status: 'SUCCEEDED' } });
+  await db.consultation.update({ where: { appointmentId: a.id }, data: { status: 'SCHEDULED' } });
+  check('patient waits for professional start', (await api('POST', route, 'USER', {})).status === 409);
+  await db.consultation.update({ where: { appointmentId: a.id }, data: { status: 'IN_PROGRESS' } });
+  await db.appointment.update({ where: { id: a.id }, data: { endAt: new Date(Date.now() - 1000) } });
+  check('expired meeting denied', (await api('POST', route, 'USER', {})).status === 409);
+  await db.appointment.update({ where: { id: a.id }, data: { endAt: new Date(Date.now() + 3600000), startAt: new Date(Date.now() + 20 * 60000) } });
+  check('early meeting denied', (await api('POST', route, 'USER', {})).status === 409);
+  await db.appointment.update({ where: { id: a.id }, data: { startAt: new Date(Date.now() - 1000) } });
+  await db.psychologistProfile.update({ where: { id: profile.id }, data: { status: 'SUSPENDIDO' } });
+  check('suspended professional denies meeting', (await api('POST', route, 'USER', {})).status === 403);
+  await db.psychologistProfile.update({ where: { id: profile.id }, data: { status: 'VERIFICADO' } });
+  process.env.JAAS_AUTH_REQUIRED_CONFIRMED = 'false';
+  check('configuration fails closed without authentication confirmation', (await api('POST', route, 'USER', {})).status === 503);
+  process.env.JAAS_AUTH_REQUIRED_CONFIRMED = 'true'; process.env.JAAS_PRIVATE_KEY = 'invalid';
+  check('bad key fails without exposing secret', (await api('POST', route, 'USER', {})).status === 503);
+  delete process.env.JAAS_ENABLED; delete process.env.JAAS_PRIVATE_KEY;
+};

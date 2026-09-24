@@ -4,3 +4,4 @@ dist/
 storage/
 uploads/
 .npm-tool/
+*.dump

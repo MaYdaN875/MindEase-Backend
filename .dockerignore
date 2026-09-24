@@ -11,3 +11,4 @@ uploads
 scratch
 tests
 .npm-tool
+*.dump
