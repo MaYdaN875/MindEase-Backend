@@ -13,6 +13,7 @@ import notificationRoutes from './routes/notificationRoutes';
 import paymentRoutes from './routes/paymentRoutes';
 import communityRoutes from './routes/communityRoutes';
 import supportRoutes from './routes/supportRoutes';
+import aiRoutes from './ai/routes/aiRoutes';
 import { errorHandler } from './middlewares/errorMiddleware';
 import { stripeWebhook } from './controllers/stripeController';
 
@@ -45,6 +46,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/community', communityRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/ai', aiRoutes);
 
 
 
