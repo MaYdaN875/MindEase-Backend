@@ -4,7 +4,7 @@ export interface SendNotificationParams {
   userId: string;
   title: string;
   content: string;
-  type?: 'APPOINTMENT_REQUEST' | 'APPOINTMENT_CONFIRMED' | 'APPOINTMENT_CANCELLED' | 'CONSULTATION_STARTED' | 'SYSTEM';
+  type?: 'APPOINTMENT_REQUEST' | 'APPOINTMENT_CONFIRMED' | 'APPOINTMENT_CANCELLED' | 'CONSULTATION_STARTED' | 'CONSULTATION_COMPLETED' | 'SYSTEM';
   referenceId?: string;
 }
 

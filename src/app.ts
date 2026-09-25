@@ -14,6 +14,8 @@ import paymentRoutes from './routes/paymentRoutes';
 import communityRoutes from './routes/communityRoutes';
 import supportRoutes from './routes/supportRoutes';
 import aiRoutes from './ai/routes/aiRoutes';
+import chatRoutes from './routes/chatRoutes';
+import reviewRoutes from './routes/reviewRoutes';
 import { errorHandler } from './middlewares/errorMiddleware';
 import { stripeWebhook } from './controllers/stripeController';
 
@@ -47,6 +49,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/community', communityRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/chats', chatRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 
 

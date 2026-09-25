@@ -61,6 +61,43 @@ export const seedDatabase = async (): Promise<void> => {
       });
     }
 
+    console.log('Seeding default AI crisis resources...');
+    const CRISIS_RESOURCES = [
+      {
+        countryCode: 'MX',
+        name: 'Línea de la Vida (México)',
+        phone: '800 911 2000',
+        url: 'https://www.gob.mx/salud/conadic/acciones-y-programas/linea-de-la-vida-988',
+        description: 'Atención especializada en salud mental y prevención del suicidio, 24/7.',
+        type: 'SUICIDE_PREVENTION',
+      },
+      {
+        countryCode: 'MX',
+        name: 'Número de Emergencias 911',
+        phone: '911',
+        url: null,
+        description: 'Servicio de atención a emergencias y auxilio médico inmediato.',
+        type: 'EMERGENCY',
+      },
+      {
+        countryCode: 'MX',
+        name: 'SAPTEL (Salud Mental)',
+        phone: '55 5259 8121',
+        url: 'https://www.saptel.org.mx',
+        description: 'Servicio de apoyo psicológico vía telefónica.',
+        type: 'MENTAL_HEALTH',
+      },
+    ];
+
+    for (const res of CRISIS_RESOURCES) {
+      const existing = await prisma.aICrisisResource.findFirst({
+        where: { name: res.name, countryCode: res.countryCode },
+      });
+      if (!existing) {
+        await prisma.aICrisisResource.create({ data: res });
+      }
+    }
+
     console.log('Database seeded successfully.');
   } catch (error) {
     console.error('Error seeding database:', error);

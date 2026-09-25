@@ -33,6 +33,7 @@ export const getProfile = async (
             id: true,
             status: true,
             autoConfirmAppointments: true,
+            photoUrl: true,
           },
         },
       },

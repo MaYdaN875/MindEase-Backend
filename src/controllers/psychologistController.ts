@@ -233,7 +233,10 @@ export const getVerifiedPsychologists = async (
     res.status(200).json({
       status: 'success',
       data: {
-        psychologists,
+        psychologists: await Promise.all(psychologists.map(async profile => {
+          const stats = await prisma.patientReview.aggregate({ where: { appointment: { psychologistId: profile.id, status: 'COMPLETED', consultation: { status: 'COMPLETED' } } }, _avg: { rating: true }, _count: true });
+          return { ...profile, rating: stats._avg.rating, reviewsCount: stats._count };
+        })),
       },
     });
   } catch (error) {

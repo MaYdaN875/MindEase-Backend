@@ -58,7 +58,7 @@ export const completeConsultation = async (req: AuthenticatedRequest, res: Respo
       await tx.appointment.update({ where: { id: appointment.id }, data: { status: 'COMPLETED' } });
       return { appointment, consultation };
     });
-    await sendNotification({ userId: appointment.userId, title: 'Consulta completada', content: 'Tu consulta ha finalizado. Gracias por confiar en MindEase.', type: 'SYSTEM', referenceId: appointment.id });
+    await sendNotification({ userId: appointment.userId, title: 'Consulta completada', content: 'Tu consulta ha finalizado. Si lo deseas, puedes calificar tu experiencia.', type: 'CONSULTATION_COMPLETED', referenceId: appointment.id });
     res.status(200).json({ status: 'success', message: 'Consulta finalizada', data: { consultation } });
   } catch (error) { next(error); }
 };

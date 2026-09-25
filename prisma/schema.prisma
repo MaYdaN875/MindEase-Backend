@@ -33,6 +33,7 @@ model User {
   verificationReviews VerificationReview[]        @relation("RevisorReviews")
   changedStatusLogs   VerificationStatusHistory[] @relation("StatusChanges")
   patientAppointments Appointment[]               @relation("PatientAppointments")
+  privateMessages     PrivateMessage[]
   payments            Payment[]                   @relation("PatientPayments")
   channelFollows      ChannelFollow[]
   communityPosts      CommunityPost[]
@@ -257,12 +258,53 @@ model Appointment {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   consultation       Consultation?
+  privateMessages    PrivateMessage[]
+  patientReview      PatientReview?
   payment            Payment?
   userReports        UserReport[]
 
   @@index([psychologistId, startAt])
 
   @@index([userId, startAt])
+}
+
+enum PatientReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model PatientReview {
+  id            String @id @default(uuid())
+  appointmentId String @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  rating        Int
+  comment       String?
+  status        PatientReviewStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+  moderatedAt   DateTime?
+  moderatorId   String?
+  moderationReason String?
+
+  @@index([status, createdAt])
+}
+
+model PrivateMessage {
+  id            String      @id @default(uuid())
+  sequence      Int         @unique @default(autoincrement())
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  senderId      String
+  sender        User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  clientId      String
+  content       String
+  createdAt     DateTime    @default(now())
+  readAt        DateTime?
+
+  @@unique([appointmentId, senderId, clientId])
+  @@index([appointmentId, sequence])
+  @@index([appointmentId, readAt, senderId])
+  @@index([senderId, createdAt])
 }
 
 enum ConsultationStatus {
@@ -773,4 +815,3 @@ model AICrisisResource {
 
   @@index([countryCode, isActive])
 }
-
