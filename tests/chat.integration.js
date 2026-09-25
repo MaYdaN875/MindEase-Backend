@@ -29,6 +29,9 @@ async function main() {
     await db.$executeRawUnsafe('DROP TABLE "PrivateMessage"');
     const migration = readFileSync(path.join(__dirname, '../prisma/migrations/20260924000000_private_chat/migration.sql'), 'utf8');
     for (const sql of migration.split(';').map(s => s.trim()).filter(Boolean)) await db.$executeRawUnsafe(sql);
+    await db.$executeRawUnsafe('DROP TABLE "Conversation"');
+    const contactMigration = readFileSync(path.join(__dirname, '../prisma/migrations/20260925000000_contact_conversations/migration.sql'), 'utf8');
+    for (const sql of contactMigration.split(';').map(s => s.trim()).filter(Boolean)) await db.$executeRawUnsafe(sql);
     check('additive migration applies', await db.privateMessage.count() === 0);
     const app = require('../src/app').default;
     server = app.listen(0, '127.0.0.1');
