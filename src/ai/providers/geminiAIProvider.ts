@@ -14,7 +14,7 @@ export class GeminiAIProvider implements IAIProvider {
 
   constructor(apiKey?: string, modelName?: string, timeoutMs?: number) {
     this.apiKey = (apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
-    this.configuredModel = (modelName || process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest').trim();
+    this.configuredModel = (modelName || process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
     this.timeoutMs = timeoutMs || parseInt(process.env.AI_TIMEOUT_MS || '20000', 10);
   }
 
@@ -34,11 +34,12 @@ export class GeminiAIProvider implements IAIProvider {
         );
 
         if (supported.length > 0) {
-          // Priorizar modelos rápidos y modernos compatibles
+          // Priorizar modelos modernos según recomendación de Google
           const preferred =
+            supported.find((m: any) => m.name.includes('3.8-flash')) ||
+            supported.find((m: any) => m.name.includes('3.8')) ||
             supported.find((m: any) => m.name.includes('2.0-flash')) ||
             supported.find((m: any) => m.name.includes('1.5-flash-latest')) ||
-            supported.find((m: any) => m.name.includes('1.5-flash')) ||
             supported.find((m: any) => m.name.includes('flash')) ||
             supported.find((m: any) => m.name.includes('gemini-pro')) ||
             supported[0];
@@ -53,8 +54,7 @@ export class GeminiAIProvider implements IAIProvider {
       console.error('[Gemini Model Discovery Error]', err);
     }
 
-    // Fallback general conocido
-    return 'gemini-1.5-flash-latest';
+    return 'gemini-3.8-flash';
   }
 
   private async getInitialModel(): Promise<string> {
@@ -74,8 +74,8 @@ export class GeminiAIProvider implements IAIProvider {
 
     const systemPrompt = buildSystemPrompt(context.availableSpecialties);
 
-    // Formatear historial cumpliendo las reglas estrictas de Gemini:
-    // 1. La secuencia debe comenzar SIEMPRE con el rol 'user' (omitir bienvenida inicial de 'model')
+    // Formatear historial cumpliendo las reglas de Gemini:
+    // 1. La secuencia debe comenzar SIEMPRE con el rol 'user'
     // 2. Los roles deben alternar estrictamente entre 'user' y 'model'
     const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
@@ -137,18 +137,28 @@ export class GeminiAIProvider implements IAIProvider {
     try {
       let response = await executeRequest(activeModel, 'v1beta');
 
-      // Si el modelo da 404 (modelo no encontrado en esta versión o alias retirado)
+      // Si da 404, verificar si el mensaje sugiere un modelo específico o usar descubrimiento
       if (response.status === 404) {
-        console.warn(`[Gemini] Model ${activeModel} returned 404. Attempting auto-discovery...`);
-        const discovered = await this.discoverModelFromApi();
-        if (discovered !== activeModel) {
-          activeModel = discovered;
+        const errorText = await response.text();
+        console.warn(`[Gemini] Model ${activeModel} returned 404. Response:`, errorText);
+
+        // Si Google indica explícitamente qué modelo usar: "Please update your code to use models/gemini-3.8-flash"
+        const suggestedMatch = errorText.match(/models\/([a-zA-Z0-9.-]+)/);
+        if (suggestedMatch && suggestedMatch[1] && suggestedMatch[1] !== activeModel) {
+          activeModel = suggestedMatch[1];
+          console.log(`[Gemini] Google explicitly suggested model: ${activeModel}. Retrying...`);
           response = await executeRequest(activeModel, 'v1beta');
+        } else {
+          const discovered = await this.discoverModelFromApi();
+          if (discovered !== activeModel) {
+            activeModel = discovered;
+            response = await executeRequest(activeModel, 'v1beta');
+          }
         }
 
-        // Si aún da 404 en v1beta, intentar con v1
+        // Si todavía da 404 en v1beta, intentar en v1
         if (response.status === 404) {
-          console.warn(`[Gemini] Model ${activeModel} still 404 on v1beta. Trying v1 endpoint...`);
+          console.warn(`[Gemini] Retrying model ${activeModel} on v1 endpoint...`);
           response = await executeRequest(activeModel, 'v1');
         }
       }
@@ -166,7 +176,7 @@ export class GeminiAIProvider implements IAIProvider {
         throw new AppError(`Error en el proveedor de IA: ${errorDetail}`, 502);
       }
 
-      // Si funcionó, guardar como modelo activo verificado
+      // Guardar el modelo que funcionó para futuras peticiones
       GeminiAIProvider.cachedWorkingModel = activeModel;
 
       const jsonResponse: any = await response.json();
