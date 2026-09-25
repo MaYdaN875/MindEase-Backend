@@ -7,14 +7,61 @@ import { AppError } from '../../middlewares/errorMiddleware';
 export class GeminiAIProvider implements IAIProvider {
   readonly providerName = 'GEMINI';
 
+  private static cachedWorkingModel: string | null = null;
   private readonly apiKey: string;
-  private readonly modelName: string;
+  private readonly configuredModel: string;
   private readonly timeoutMs: number;
 
   constructor(apiKey?: string, modelName?: string, timeoutMs?: number) {
     this.apiKey = (apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
-    this.modelName = (modelName || process.env.GEMINI_MODEL || 'gemini-1.5-flash').trim();
+    this.configuredModel = (modelName || process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest').trim();
     this.timeoutMs = timeoutMs || parseInt(process.env.AI_TIMEOUT_MS || '20000', 10);
+  }
+
+  /**
+   * Consulta ModelService.ListModels de Google Gemini para seleccionar
+   * dinámicamente un modelo disponible y compatible con generateContent.
+   */
+  private async discoverModelFromApi(): Promise<string> {
+    try {
+      const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${this.apiKey}`;
+      const res = await fetch(listUrl);
+      if (res.ok) {
+        const data: any = await res.json();
+        const models: any[] = data?.models || [];
+        const supported = models.filter((m: any) =>
+          m.supportedGenerationMethods?.includes('generateContent')
+        );
+
+        if (supported.length > 0) {
+          // Priorizar modelos rápidos y modernos compatibles
+          const preferred =
+            supported.find((m: any) => m.name.includes('2.0-flash')) ||
+            supported.find((m: any) => m.name.includes('1.5-flash-latest')) ||
+            supported.find((m: any) => m.name.includes('1.5-flash')) ||
+            supported.find((m: any) => m.name.includes('flash')) ||
+            supported.find((m: any) => m.name.includes('gemini-pro')) ||
+            supported[0];
+
+          const cleanName = preferred.name.replace(/^models\//, '');
+          console.log(`[Gemini Dynamic Model Discovery] Selected working model: ${cleanName}`);
+          GeminiAIProvider.cachedWorkingModel = cleanName;
+          return cleanName;
+        }
+      }
+    } catch (err) {
+      console.error('[Gemini Model Discovery Error]', err);
+    }
+
+    // Fallback general conocido
+    return 'gemini-1.5-flash-latest';
+  }
+
+  private async getInitialModel(): Promise<string> {
+    if (GeminiAIProvider.cachedWorkingModel) {
+      return GeminiAIProvider.cachedWorkingModel;
+    }
+    return this.configuredModel.replace(/^models\//, '');
   }
 
   async generateOrientation(context: AIConversationContext): Promise<AIOrientationResult> {
@@ -57,28 +104,54 @@ export class GeminiAIProvider implements IAIProvider {
       });
     }
 
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.modelName}:generateContent?key=${this.apiKey}`;
+    let activeModel = await this.getInitialModel();
+    const requestPayload = {
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      contents,
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 1024,
+        responseMimeType: 'application/json',
+      },
+    };
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const executeRequest = async (model: string, apiVersion: string = 'v1beta') => {
+      const endpoint = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${this.apiKey}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify(requestPayload),
+        });
+        return res;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    };
 
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemPrompt }],
-          },
-          contents,
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 1024,
-            responseMimeType: 'application/json',
-          },
-        }),
-      });
+      let response = await executeRequest(activeModel, 'v1beta');
+
+      // Si el modelo da 404 (modelo no encontrado en esta versión o alias retirado)
+      if (response.status === 404) {
+        console.warn(`[Gemini] Model ${activeModel} returned 404. Attempting auto-discovery...`);
+        const discovered = await this.discoverModelFromApi();
+        if (discovered !== activeModel) {
+          activeModel = discovered;
+          response = await executeRequest(activeModel, 'v1beta');
+        }
+
+        // Si aún da 404 en v1beta, intentar con v1
+        if (response.status === 404) {
+          console.warn(`[Gemini] Model ${activeModel} still 404 on v1beta. Trying v1 endpoint...`);
+          response = await executeRequest(activeModel, 'v1');
+        }
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -92,6 +165,9 @@ export class GeminiAIProvider implements IAIProvider {
         } catch (_) {}
         throw new AppError(`Error en el proveedor de IA: ${errorDetail}`, 502);
       }
+
+      // Si funcionó, guardar como modelo activo verificado
+      GeminiAIProvider.cachedWorkingModel = activeModel;
 
       const jsonResponse: any = await response.json();
       const rawText =
@@ -161,8 +237,6 @@ export class GeminiAIProvider implements IAIProvider {
         err.message || 'No se pudo conectar con el proveedor de orientación en este momento.',
         503
       );
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 }
