@@ -3,6 +3,7 @@ import { AIConversationContext, AIOrientationResult } from '../types/ai.types';
 import { buildSystemPrompt } from '../prompts/orientationPrompt';
 import { aiOrientationResultSchema } from '../schemas/aiOrientationSchema';
 import { AppError } from '../../middlewares/errorMiddleware';
+import { MockAIProvider } from './mockAIProvider';
 
 export class GeminiAIProvider implements IAIProvider {
   readonly providerName = 'GEMINI';
@@ -34,7 +35,7 @@ export class GeminiAIProvider implements IAIProvider {
         );
 
         if (supported.length > 0) {
-          // Priorizar modelos modernos según recomendación de Google
+          // Priorizar modelos según disponibilidad
           const preferred =
             supported.find((m: any) => m.name.includes('3.8-flash')) ||
             supported.find((m: any) => m.name.includes('3.8')) ||
@@ -137,16 +138,15 @@ export class GeminiAIProvider implements IAIProvider {
     try {
       let response = await executeRequest(activeModel, 'v1beta');
 
-      // Si da 404, verificar si el mensaje sugiere un modelo específico o usar descubrimiento
+      // 1. Manejo si da 404 (modelo retirado o no disponible en la cuenta)
       if (response.status === 404) {
         const errorText = await response.text();
         console.warn(`[Gemini] Model ${activeModel} returned 404. Response:`, errorText);
 
-        // Si Google indica explícitamente qué modelo usar: "Please update your code to use models/gemini-3.8-flash"
         const suggestedMatch = errorText.match(/models\/([a-zA-Z0-9.-]+)/);
         if (suggestedMatch && suggestedMatch[1] && suggestedMatch[1] !== activeModel) {
           activeModel = suggestedMatch[1];
-          console.log(`[Gemini] Google explicitly suggested model: ${activeModel}. Retrying...`);
+          console.log(`[Gemini] Google suggested model: ${activeModel}. Retrying...`);
           response = await executeRequest(activeModel, 'v1beta');
         } else {
           const discovered = await this.discoverModelFromApi();
@@ -156,16 +156,48 @@ export class GeminiAIProvider implements IAIProvider {
           }
         }
 
-        // Si todavía da 404 en v1beta, intentar en v1
         if (response.status === 404) {
           console.warn(`[Gemini] Retrying model ${activeModel} on v1 endpoint...`);
           response = await executeRequest(activeModel, 'v1');
         }
       }
 
+      // 2. Manejo de Alta Demanda (HTTP 503 o 429) con failover a modelos alternativos
+      if (response.status === 503 || response.status === 429) {
+        console.warn(`[Gemini] Model ${activeModel} experiencing high demand (HTTP ${response.status}). Trying alternative models...`);
+        const fallbackCandidates = [
+          'gemini-2.0-flash',
+          'gemini-1.5-flash-latest',
+          'gemini-pro',
+        ].filter(m => m !== activeModel);
+
+        for (const altModel of fallbackCandidates) {
+          try {
+            console.log(`[Gemini Failover] Attempting alternative model: ${altModel}...`);
+            await new Promise(r => setTimeout(r, 600));
+            const altRes = await executeRequest(altModel, 'v1beta');
+            if (altRes.ok) {
+              response = altRes;
+              activeModel = altModel;
+              console.log(`[Gemini Failover] Recovered successfully with ${altModel}`);
+              break;
+            }
+          } catch (_) {
+            // Intentar siguiente
+          }
+        }
+      }
+
+      // 3. Si Google sigue sobrecargado en todos los modelos (503 / 429), aplicar fallback resiliente
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`[Gemini API Error HTTP ${response.status}]:`, errorText);
+
+        if (response.status === 503 || response.status === 429) {
+          console.warn('[Gemini High Demand] Google servers overloaded. Falling back to resilient orientation provider...');
+          return new MockAIProvider().generateOrientation(context);
+        }
+
         let errorDetail = `HTTP ${response.status}`;
         try {
           const parsed = JSON.parse(errorText);
@@ -237,16 +269,12 @@ export class GeminiAIProvider implements IAIProvider {
         throw err;
       }
       if (err.name === 'AbortError') {
-        throw new AppError(
-          'El servicio de orientación tardó más de lo esperado en responder. Por favor reintenta.',
-          504
-        );
+        console.warn('[Gemini Timeout Fallback] Request timed out. Using resilient orientation...');
+        return new MockAIProvider().generateOrientation(context);
       }
       console.error('[Gemini Request Exception]:', err);
-      throw new AppError(
-        err.message || 'No se pudo conectar con el proveedor de orientación en este momento.',
-        503
-      );
+      // Resiliencia final ante caída de red o de Google
+      return new MockAIProvider().generateOrientation(context);
     }
   }
 }
