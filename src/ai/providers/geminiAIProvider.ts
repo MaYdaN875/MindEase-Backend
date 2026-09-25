@@ -12,36 +12,50 @@ export class GeminiAIProvider implements IAIProvider {
   private readonly timeoutMs: number;
 
   constructor(apiKey?: string, modelName?: string, timeoutMs?: number) {
-    this.apiKey = apiKey || process.env.GEMINI_API_KEY || '';
-    this.modelName = modelName || process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-    this.timeoutMs = timeoutMs || parseInt(process.env.AI_TIMEOUT_MS || '15000', 10);
+    this.apiKey = (apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
+    this.modelName = (modelName || process.env.GEMINI_MODEL || 'gemini-1.5-flash').trim();
+    this.timeoutMs = timeoutMs || parseInt(process.env.AI_TIMEOUT_MS || '20000', 10);
   }
 
   async generateOrientation(context: AIConversationContext): Promise<AIOrientationResult> {
     if (!this.apiKey) {
       throw new AppError(
-        'La clave de API de IA no está configurada en el servidor. Contacte a soporte.',
+        'La clave de API de Gemini (GEMINI_API_KEY) no está configurada en las variables de entorno.',
         500
       );
     }
 
     const systemPrompt = buildSystemPrompt(context.availableSpecialties);
 
-    // Formatear mensajes previos
-    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+    // Formatear historial cumpliendo las reglas estrictas de Gemini:
+    // 1. La secuencia debe comenzar SIEMPRE con el rol 'user' (omitir bienvenida inicial de 'model')
+    // 2. Los roles deben alternar estrictamente entre 'user' y 'model'
+    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
-    for (const msg of context.history) {
-      contents.push({
-        role: msg.role === 'USER' ? 'user' : 'model',
-        parts: [{ text: msg.content }],
-      });
+    const firstUserIndex = context.history.findIndex(m => m.role === 'USER');
+    const validHistory = firstUserIndex >= 0 ? context.history.slice(firstUserIndex) : [];
+
+    for (const msg of validHistory) {
+      const geminiRole = msg.role === 'USER' ? 'user' : 'model';
+      if (contents.length > 0 && contents[contents.length - 1].role === geminiRole) {
+        contents[contents.length - 1].parts[0].text += `\n${msg.content}`;
+      } else {
+        contents.push({
+          role: geminiRole,
+          parts: [{ text: msg.content }],
+        });
+      }
     }
 
     // Agregar el mensaje actual del usuario
-    contents.push({
-      role: 'user',
-      parts: [{ text: context.userMessage }],
-    });
+    if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+      contents[contents.length - 1].parts[0].text += `\n${context.userMessage}`;
+    } else {
+      contents.push({
+        role: 'user',
+        parts: [{ text: context.userMessage }],
+      });
+    }
 
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.modelName}:generateContent?key=${this.apiKey}`;
 
@@ -67,7 +81,16 @@ export class GeminiAIProvider implements IAIProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`Gemini API returned status ${response.status}`);
+        const errorText = await response.text();
+        console.error(`[Gemini API Error HTTP ${response.status}]:`, errorText);
+        let errorDetail = `HTTP ${response.status}`;
+        try {
+          const parsed = JSON.parse(errorText);
+          if (parsed?.error?.message) {
+            errorDetail = parsed.error.message;
+          }
+        } catch (_) {}
+        throw new AppError(`Error en el proveedor de IA: ${errorDetail}`, 502);
       }
 
       const jsonResponse: any = await response.json();
@@ -75,10 +98,17 @@ export class GeminiAIProvider implements IAIProvider {
         jsonResponse?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 
       if (!rawText) {
-        throw new Error('Respuesta vacía del proveedor de IA');
+        throw new AppError('El proveedor de IA no devolvió contenido para este mensaje.', 502);
       }
 
-      const parsedJson = JSON.parse(rawText);
+      let parsedJson: any;
+      try {
+        parsedJson = JSON.parse(rawText);
+      } catch (parseError) {
+        console.error('[Gemini JSON Parse Error] Raw text was:', rawText);
+        throw new AppError('El proveedor de IA devolvió una estructura JSON no interpretable.', 502);
+      }
+
       const validated = aiOrientationResultSchema.safeParse(parsedJson);
 
       if (!validated.success) {
@@ -117,14 +147,18 @@ export class GeminiAIProvider implements IAIProvider {
 
       return validated.data as AIOrientationResult;
     } catch (err: any) {
+      if (err instanceof AppError) {
+        throw err;
+      }
       if (err.name === 'AbortError') {
         throw new AppError(
           'El servicio de orientación tardó más de lo esperado en responder. Por favor reintenta.',
           504
         );
       }
+      console.error('[Gemini Request Exception]:', err);
       throw new AppError(
-        'No se pudo conectar con el proveedor de orientación en este momento.',
+        err.message || 'No se pudo conectar con el proveedor de orientación en este momento.',
         503
       );
     } finally {

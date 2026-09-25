@@ -205,9 +205,14 @@ export class AIOrientationService {
         userMessage: userMessageText,
         availableSpecialties,
       });
-    } catch (_err) {
+    } catch (_err: any) {
+      console.error('[AI Orientation Provider Error]:', _err?.message || _err);
+      if (_err instanceof AppError) {
+        throw _err;
+      }
       throw new AppError(
-        'La orientación con IA no se encuentra disponible temporalmente. Inténtalo de nuevo en unos minutos.',
+        _err?.message ||
+          'La orientación con IA no se encuentra disponible temporalmente. Inténtalo de nuevo en unos minutos.',
         503
       );
     }
