@@ -1,4 +1,6 @@
 import prisma from '../../config/db';
+import { assertCanRecommend } from './aiSessionPolicy';
+import { AppError } from '../../middlewares/errorMiddleware';
 import { eligibleProfessionalWhere } from '../../services/clinicalPolicy';
 import {
   NeedsProfile,
@@ -22,6 +24,9 @@ export class AIRecommendationService {
     if (!session) {
       throw new Error(`Orientation session ${sessionId} not found`);
     }
+
+    assertCanRecommend(session);
+    if (session.status !== 'COMPLETED') throw new AppError('Primero debes finalizar la orientación.', 409);
 
     // 1. Resolver especialidades reales en la base de datos
     const allDbSpecialties = await prisma.specialty.findMany();

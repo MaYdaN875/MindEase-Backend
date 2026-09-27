@@ -3,6 +3,7 @@ import { authMiddleware } from '../../middlewares/authMiddleware';
 import { aiRateLimiter } from '../middlewares/aiRateLimiter';
 import {
   getConsentStatus,
+  deleteHistoryAndConsent,
   registerConsent,
   createSession,
   getActiveSession,
@@ -13,6 +14,8 @@ import {
 } from '../controllers/aiOrientationController';
 
 const router = Router();
+router.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+router.delete('/orientation/history', authMiddleware as any, deleteHistoryAndConsent as any);
 
 // Consentimiento informado
 router.get('/orientation/consent', authMiddleware as any, getConsentStatus as any);

@@ -4,319 +4,135 @@ import { AIProviderFactory } from '../providers/aiProviderFactory';
 import { AISafetyService } from './aiSafetyService';
 import { AIRecommendationService } from './aiRecommendationService';
 import { PROMPT_VERSION } from '../prompts/orientationPrompt';
-import {
-  AIChatMessage,
-  AIOrientationResult,
-  CrisisResourceData,
-  NeedsProfile,
-  OrientationRecommendationsResponse,
-} from '../types/ai.types';
+import { aiOrientationResultSchema } from '../schemas/aiOrientationSchema';
+import { assertCanRecommend, requiresCrisisSupport } from './aiSessionPolicy';
+import { assertAIConsent } from './aiPrivacyService';
+import { AIChatMessage, NeedsProfile } from '../types/ai.types';
+
+const messages = { messages: { orderBy: { createdAt: 'asc' as const } } };
+const crisisText = 'Tu seguridad es prioritaria. Esta orientación automática se ha detenido. Busca apoyo humano y comunícate con los recursos de ayuda que aparecen aquí; ante peligro inmediato, contacta a emergencias.';
 
 export class AIOrientationService {
-  private static readonly MAX_CONTEXT_MESSAGES = 6;
-  private static readonly MAX_MESSAGES_PER_SESSION = 20;
+  private static async withResources(session: any) {
+    return session && requiresCrisisSupport(session)
+      ? { ...session, crisisResources: await AISafetyService.getCrisisResources('MX') } : session;
+  }
 
-  /**
-   * Crea una nueva sesión de orientación. Si ya existe una activa, la reutiliza o cierra según estado.
-   */
   static async createOrGetSession(userId: string): Promise<any> {
-    const existing = await prisma.aIOrientationSession.findFirst({
-      where: {
-        userId,
-        status: 'ACTIVE',
-      },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    });
-
-    if (existing) {
-      return existing;
-    }
-
-    const provider = AIProviderFactory.getProvider();
-
-    // Crear sesión y el primer mensaje de bienvenida de la IA
-    const session = await prisma.aIOrientationSession.create({
-      data: {
-        userId,
-        status: 'ACTIVE',
-        riskLevel: 'LOW',
-        promptVersion: PROMPT_VERSION,
-        provider: provider.providerName,
-        messages: {
-          create: {
-            role: 'ASSISTANT',
-            content:
-              'Hola, bienvenido(a) a MindEase. Soy tu asistente de orientación inicial. Estoy aquí para escucharte y ayudarte a identificar qué tipo de apoyo profesional podría ser más útil para ti. ¿Qué te gustaría contarme sobre lo que estás viviendo últimamente?',
-          },
-        },
-      },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    });
-
-    return session;
+    await assertAIConsent(userId);
+    const existing = await this.getActiveSession(userId);
+    if (existing) return existing;
+    return prisma.aIOrientationSession.create({ data: {
+      userId, status: 'ACTIVE', riskLevel: 'LOW', promptVersion: PROMPT_VERSION,
+      provider: AIProviderFactory.getProvider().providerName,
+      messages: { create: { role: 'ASSISTANT', content: 'Hola. Soy el asistente de orientación inicial de MindEase. No sustituyo a un profesional. ¿Qué tipo de apoyo te gustaría encontrar?' } },
+    }, include: messages });
   }
 
-  /**
-   * Obtiene la sesión activa actual del usuario si existe.
-   */
   static async getActiveSession(userId: string): Promise<any> {
-    return prisma.aIOrientationSession.findFirst({
-      where: {
-        userId,
-        status: 'ACTIVE',
-      },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-        },
-      },
+    // An escalation is not silently replaced with a new ordinary conversation.
+    const escalated = await prisma.aIOrientationSession.findFirst({
+      where: { userId, status: 'ESCALATED' }, orderBy: { createdAt: 'desc' }, include: messages,
     });
+    return this.withResources(escalated || await prisma.aIOrientationSession.findFirst({
+      where: { userId, status: 'ACTIVE' }, orderBy: { createdAt: 'desc' }, include: messages,
+    }));
   }
 
-  /**
-   * Obtiene una sesión por su ID asegurando que pertenezca al usuario autenticado.
-   */
   static async getSessionById(userId: string, sessionId: string): Promise<any> {
-    const session = await prisma.aIOrientationSession.findUnique({
-      where: { id: sessionId },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    });
-
-    if (!session) {
-      throw new AppError('Sesión de orientación no encontrada', 404);
-    }
-
-    if (session.userId !== userId) {
-      throw new AppError('No tienes permiso para acceder a esta sesión', 403);
-    }
-
-    return session;
+    const session = await prisma.aIOrientationSession.findUnique({ where: { id: sessionId }, include: messages });
+    if (!session) throw new AppError('Sesión de orientación no encontrada', 404);
+    if (session.userId !== userId) throw new AppError('No tienes permiso para acceder a esta sesión', 403);
+    return this.withResources(session);
   }
 
-  /**
-   * Procesa el mensaje del usuario con la capa de seguridad, invocación de IA y guardado.
-   */
-  static async processMessage(
-    userId: string,
-    sessionId: string,
-    userMessageText: string
-  ): Promise<{
-    userMessage: any;
-    assistantMessage: any;
-    isComplete: boolean;
-    riskLevel: string;
-    crisisResources?: CrisisResourceData[];
-  }> {
-    const session = await this.getSessionById(userId, sessionId);
-
-    if (session.status === 'COMPLETED') {
-      throw new AppError('Esta sesión de orientación ya fue completada.', 400);
-    }
-
-    if (session.status === 'CANCELLED') {
-      throw new AppError('Esta sesión de orientación fue cancelada.', 400);
-    }
-
-    if (session.messages.length >= this.MAX_MESSAGES_PER_SESSION) {
-      throw new AppError(
-        'Has alcanzado el número máximo de mensajes para esta sesión de orientación. Por favor finalízala para ver tus recomendaciones.',
-        400
-      );
-    }
-
-    // 1. Pre-evaluación con AISafetyService
-    const preSafety = AISafetyService.evaluateUserInput(userMessageText);
-
-    // Guardar el mensaje del usuario
-    const savedUserMsg = await prisma.aIMessage.create({
-      data: {
-        sessionId,
-        role: 'USER',
-        content: userMessageText.trim(),
-      },
+  private static async escalate(userId: string, sessionId: string, savedUserMsg: any, risk: 'HIGH' | 'EMERGENCY') {
+    const crisisResources = await AISafetyService.getCrisisResources('MX');
+    const result = await prisma.$transaction(async tx => {
+      await assertAIConsent(userId, tx);
+      // A concurrent lower-risk result must never downgrade EMERGENCY.
+      await tx.aIOrientationSession.updateMany({
+        where: { id: sessionId, userId, ...(risk === 'HIGH' ? { riskLevel: { not: 'EMERGENCY' as const } } : {}) },
+        data: { status: 'ESCALATED', riskLevel: risk, summary: 'Orientación detenida: requiere apoyo humano.', completedAt: null },
+      });
+      const session = await tx.aIOrientationSession.findUniqueOrThrow({ where: { id: sessionId } });
+      const assistantMessage = await tx.aIMessage.create({ data: { sessionId, role: 'ASSISTANT', content: crisisText } });
+      return { assistantMessage, riskLevel: session.riskLevel };
     });
+    return { userMessage: savedUserMsg, ...result, status: 'ESCALATED', isComplete: true, crisisResources };
+  }
 
-    // 2. Manejo de Crisis o Emergencia inmediata
-    if (preSafety.riskLevel === 'EMERGENCY' || preSafety.riskLevel === 'HIGH') {
-      const crisisResources = await AISafetyService.getCrisisResources('MX');
-      const crisisContent =
-        preSafety.emergencyMessage ||
-        'Tu bienestar y seguridad son lo más importante. Te recomendamos encarecidamente comunicarte de inmediato con los recursos de apoyo y contención especializada.';
-
-      const savedAssistantMsg = await prisma.aIMessage.create({
-        data: {
-          sessionId,
-          role: 'ASSISTANT',
-          content: crisisContent,
-        },
-      });
-
-      await prisma.aIOrientationSession.update({
-        where: { id: sessionId },
-        data: {
-          status: 'ESCALATED',
-          riskLevel: preSafety.riskLevel,
-          summary: 'Sesión escalada debido a indicadores de riesgo o crisis detectados.',
-        },
-      });
-
-      return {
-        userMessage: savedUserMsg,
-        assistantMessage: savedAssistantMsg,
-        isComplete: true,
-        riskLevel: preSafety.riskLevel,
-        crisisResources,
-      };
+  static async processMessage(userId: string, sessionId: string, text: string): Promise<any> {
+    await assertAIConsent(userId);
+    const session = await this.getSessionById(userId, sessionId);
+    if (session.status !== 'ACTIVE' || requiresCrisisSupport(session)) {
+      throw new AppError('Esta sesión no admite más mensajes de orientación automática.', 409);
     }
-
-    // 3. Preparar contexto para la IA
-    const history: AIChatMessage[] = session.messages
-      .slice(-this.MAX_CONTEXT_MESSAGES)
-      .map((m: any) => ({
-        role: m.role as 'USER' | 'ASSISTANT',
-        content: m.content,
-      }));
-
-    // Obtener especialidades activas de la BD para el contexto
-    const dbSpecialties = await prisma.specialty.findMany({ select: { name: true } });
-    const availableSpecialties = dbSpecialties.map(s => s.name);
-
-    // 4. Invocar proveedor de IA
-    const provider = AIProviderFactory.getProvider();
-    let result: AIOrientationResult;
-
+    const preSafety = AISafetyService.evaluateUserInput(text);
+    // Safety runs before the ordinary conversation quota.
+    if (!requiresCrisisSupport(preSafety) && session.messages.length >= 20) {
+      throw new AppError('Has alcanzado el límite de esta orientación. Puedes finalizarla.', 400);
+    }
+    const userMessage = await prisma.aIMessage.create({ data: { sessionId, role: 'USER', content: text.trim() } });
+    if (requiresCrisisSupport(preSafety)) {
+      return this.escalate(userId, sessionId, userMessage, preSafety.riskLevel === 'EMERGENCY' ? 'EMERGENCY' : 'HIGH');
+    }
+    const history: AIChatMessage[] = session.messages.slice(-6).map((m: any) => ({ role: m.role, content: m.content }));
+    const specialties = await prisma.specialty.findMany({ select: { name: true } });
+    let raw: unknown;
     try {
-      result = await provider.generateOrientation({
-        sessionId,
-        userId,
-        history,
-        userMessage: userMessageText,
-        availableSpecialties,
+      raw = await AIProviderFactory.getProvider().generateOrientation({
+        userId, sessionId, history, userMessage: text, availableSpecialties: specialties.map(s => s.name),
       });
-    } catch (_err: any) {
-      console.error('[AI Orientation Provider Error]:', _err?.message || _err);
-      if (_err instanceof AppError) {
-        throw _err;
-      }
-      throw new AppError(
-        _err?.message ||
-          'La orientación con IA no se encuentra disponible temporalmente. Inténtalo de nuevo en unos minutos.',
-        503
-      );
+    } catch {
+      throw new AppError('La orientación no está disponible temporalmente. Inténtalo más tarde.', 503);
     }
-
-    // 5. Post-evaluación y saneamiento de salida
-    const { safeText } = AISafetyService.sanitizeAndValidateAssistantOutput(
-      result.assistantMessage
-    );
-
-    // Guardar respuesta del asistente
-    const savedAssistantMsg = await prisma.aIMessage.create({
-      data: {
-        sessionId,
-        role: 'ASSISTANT',
-        content: safeText,
-      },
+    // Validate every adapter at the service boundary, not only Gemini.
+    const parsed = aiOrientationResultSchema.safeParse(raw);
+    if (!parsed.success) throw new AppError('No se pudo validar la respuesta de orientación.', 502);
+    const result = parsed.data;
+    if (requiresCrisisSupport(result.safety)) {
+      return this.escalate(userId, sessionId, userMessage, result.safety.riskLevel === 'EMERGENCY' ? 'EMERGENCY' : 'HIGH');
+    }
+    const { safeText } = AISafetyService.sanitizeAndValidateAssistantOutput(result.assistantMessage);
+    const riskLevel = [session.riskLevel, preSafety.riskLevel, result.safety.riskLevel].includes('MODERATE') ? 'MODERATE' : 'LOW';
+    const status = result.conversation.isComplete ? 'COMPLETED' : 'ACTIVE';
+    const assistantMessage = await prisma.$transaction(async tx => {
+      await assertAIConsent(userId, tx);
+      const update = await tx.aIOrientationSession.updateMany({
+        where: { id: sessionId, userId, status: 'ACTIVE', riskLevel: { in: ['LOW', 'MODERATE'] } },
+        data: { status, riskLevel, summary: result.conversation.summary || null,
+          needsProfile: result.needsProfile, completedAt: status === 'COMPLETED' ? new Date() : null },
+      });
+      if (update.count !== 1) throw new AppError('La sesión cambió de estado. Vuelve a cargarla.', 409);
+      return tx.aIMessage.create({ data: { sessionId, role: 'ASSISTANT', content: safeText } });
     });
-
-    // Actualizar estado de la sesión
-    const updatedStatus = result.conversation.isComplete ? 'COMPLETED' : 'ACTIVE';
-    const completedAt = result.conversation.isComplete ? new Date() : null;
-
-    await prisma.aIOrientationSession.update({
-      where: { id: sessionId },
-      data: {
-        status: updatedStatus,
-        riskLevel: result.safety.riskLevel,
-        summary: result.conversation.summary || null,
-        needsProfile: result.needsProfile as any,
-        completedAt,
-      },
-    });
-
-    return {
-      userMessage: savedUserMsg,
-      assistantMessage: savedAssistantMsg,
-      isComplete: result.conversation.isComplete,
-      riskLevel: result.safety.riskLevel,
-    };
+    return { userMessage, assistantMessage, status, riskLevel, isComplete: status === 'COMPLETED' };
   }
 
-  /**
-   * Finaliza la sesión manualmente si el usuario decide concluir antes y genera recomendaciones.
-   */
-  static async completeSession(
-    userId: string,
-    sessionId: string
-  ): Promise<OrientationRecommendationsResponse> {
+  static async completeSession(userId: string, sessionId: string) {
+    await assertAIConsent(userId);
     const session = await this.getSessionById(userId, sessionId);
-
-    let needsProfile: NeedsProfile = session.needsProfile as any;
-
-    // Si aún no tenía perfil estructurado guardado, construir uno base con el historial
-    if (!needsProfile) {
-      needsProfile = {
-        primaryConcern: session.summary || 'Orientación inicial para apoyo psicológico',
-        topics: ['bienestar_general'],
-        suggestedSpecialties: [
-          {
-            name: 'Psicología Clínica',
-            reason: 'Área general recomendada para evaluar tus necesidades individuales.',
-          },
-        ],
-        preferences: {
-          modality: 'ONLINE',
-          preferredTime: null,
-          maxBudget: null,
-        },
-      };
+    assertCanRecommend(session);
+    if (session.status === 'ACTIVE') {
+      const update = await prisma.aIOrientationSession.updateMany({
+        where: { id: sessionId, userId, status: 'ACTIVE', riskLevel: { in: ['LOW', 'MODERATE'] } },
+        data: { status: 'COMPLETED', completedAt: new Date() },
+      });
+      if (update.count !== 1) throw new AppError('La sesión cambió de estado. Vuelve a cargarla.', 409);
     }
-
-    await prisma.aIOrientationSession.update({
-      where: { id: sessionId },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        needsProfile: needsProfile as any,
-      },
-    });
-
-    return AIRecommendationService.generateRecommendations(sessionId, needsProfile);
+    return this.getRecommendations(userId, sessionId);
   }
 
-  /**
-   * Obtiene las recomendaciones de una sesión.
-   */
-  static async getRecommendations(
-    userId: string,
-    sessionId: string
-  ): Promise<OrientationRecommendationsResponse> {
+  static async getRecommendations(userId: string, sessionId: string) {
+    await assertAIConsent(userId);
     const session = await this.getSessionById(userId, sessionId);
-
-    const needsProfile: NeedsProfile = (session.needsProfile as any) || {
-      primaryConcern: session.summary || 'Orientación inicial',
-      topics: [],
-      suggestedSpecialties: [
-        {
-          name: 'Psicología Clínica',
-          reason: 'Acompañamiento clínico integral.',
-        },
-      ],
-      preferences: { modality: 'ONLINE', preferredTime: null, maxBudget: null },
+    assertCanRecommend(session);
+    if (session.status !== 'COMPLETED') throw new AppError('Primero debes finalizar la orientación.', 409);
+    const needs: NeedsProfile = session.needsProfile || {
+      primaryConcern: null, topics: [], suggestedSpecialties: [],
+      preferences: { modality: null, preferredTime: null, maxBudget: null },
     };
-
-    return AIRecommendationService.generateRecommendations(sessionId, needsProfile);
+    return AIRecommendationService.generateRecommendations(sessionId, needs);
   }
 }

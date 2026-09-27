@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const { PrismaClient } = require('@prisma/client');
 const jwt = require('jsonwebtoken');
 
@@ -23,6 +25,7 @@ async function main() {
 
   const control = new PrismaClient({ datasources: { db: { url: source } } });
   let db, server, checks = 0;
+  let schemaFixture;
   const check = (name, condition) => {
     assert.ok(condition, name);
     console.log('PASS: ' + name);
@@ -32,14 +35,33 @@ async function main() {
   try {
     // 1. Setup isolated database schema
     await control.$executeRawUnsafe('CREATE SCHEMA "' + schema + '"');
-    execFileSync(process.execPath, [
+    const prismaCli = require.resolve('prisma/build/index.js');
+    const fullSchema = path.join(__dirname, '../prisma/schema.prisma');
+    if (process.env.AI_TEST_REPLAY_MIGRATIONS === 'true') {
+      // Explicit full-history audit. Historical baseline gaps must not be hidden.
+      execFileSync(process.execPath, [
       require.resolve('prisma/build/index.js'),
-      'db',
-      'push',
-      '--skip-generate',
+      'migrate',
+      'deploy',
       '--schema',
       path.join(__dirname, '../prisma/schema.prisma')
-    ], { env: process.env, stdio: 'pipe' });
+      ], { env: process.env, stdio: 'pipe' });
+    } else {
+      // Build the pre-AI schema in an isolated namespace, then execute the REAL additive SQL.
+      // The old migration chain is incomplete (PaymentStatus is missing after the initial migration).
+      const beforeAI = fs.readFileSync(fullSchema, 'utf8')
+        .replace(/^(?:model|enum) AI\w+\s*\{[^}]*\}\s*/gm, '')
+        .replace(/^.*\b(?:AIOrientationSession|AIRecommendation)\[\].*\r?\n/gm, '');
+      schemaFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'mindease-ai-schema-'));
+      const fixturePath = path.join(schemaFixture, 'schema.prisma');
+      fs.writeFileSync(fixturePath, beforeAI);
+      execFileSync(process.execPath, [prismaCli, 'db', 'push', '--skip-generate', '--schema', fixturePath], { env: process.env, stdio: 'pipe' });
+      execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
+        '--file', path.join(__dirname, '../prisma/migrations/20260927000000_ai_orientation/migration.sql')], { env: process.env, stdio: 'pipe' });
+      execFileSync(process.execPath, [prismaCli, 'migrate', 'diff', '--from-schema-datasource', fullSchema,
+        '--to-schema-datamodel', fullSchema, '--exit-code'], { env: process.env, stdio: 'pipe' });
+      check('AI migration produces exact Prisma schema', true);
+    }
 
     db = require('../src/config/db').default;
 
@@ -160,7 +182,7 @@ async function main() {
       const resCheck = await api('GET', '/orientation/consent', patientA);
       check('3a. Initial consent status is false', resCheck.status === 200 && resCheck.data.data.hasConsent === false);
 
-      const resConsent = await api('POST', '/orientation/consent', patientA);
+      const resConsent = await api('POST', '/orientation/consent', patientA, { version: resCheck.data.data.version, adultConfirmed: true });
       check('3b. Consent registration returns 201', resConsent.status === 201);
 
       const resCheck2 = await api('GET', '/orientation/consent', patientA);
@@ -202,7 +224,8 @@ async function main() {
     // TEST 8: Critical Crisis Escalation
     {
       // Create new session for crisis test
-      await api('POST', '/orientation/consent', patientB);
+      const notice = await api('GET', '/orientation/consent', patientB);
+      await api('POST', '/orientation/consent', patientB, { version: notice.data.data.version, adultConfirmed: true });
       const resSessB = await api('POST', '/orientation/sessions', patientB, {});
       const sessionBId = resSessB.data.data.session.id;
 
@@ -218,6 +241,11 @@ async function main() {
       // Check session status in DB is ESCALATED
       const dbSession = await db.aIOrientationSession.findUnique({ where: { id: sessionBId } });
       check('8e. Session in DB is ESCALATED', dbSession.status === 'ESCALATED');
+      check('8f. Escalated session cannot complete', (await api('POST', `/orientation/sessions/${sessionBId}/complete`, patientB, {})).status === 409);
+      check('8g. Escalated session cannot recommend', (await api('GET', `/orientation/sessions/${sessionBId}/recommendations`, patientB)).status === 409);
+      check('8h. Escalated session cannot resume ordinary messages', (await api('POST', `/orientation/sessions/${sessionBId}/messages`, patientB, { message: 'Hola' })).status === 409);
+      const resumed = await api('POST', '/orientation/sessions', patientB, {});
+      check('8i. Reopening retains escalation and resources', resumed.data.data.session.id === sessionBId && resumed.data.data.session.crisisResources.length > 0);
     }
 
     // TEST 9: Complete session and get recommendations
@@ -239,12 +267,55 @@ async function main() {
       check('9f. Inactive user psychologist is NEVER included', !hasInactive);
     }
 
+    const { AIProviderFactory } = require('../src/ai/providers/aiProviderFactory');
+    const { MockAIProvider } = require('../src/ai/providers/mockAIProvider');
+    const fixture = await new MockAIProvider().generateOrientation({ history: [], userMessage: 'Hola', availableSpecialties: [] });
+    for (const safety of [
+      { riskLevel: 'HIGH', requiresImmediateHelp: false, flags: [] },
+      { riskLevel: 'EMERGENCY', requiresImmediateHelp: true, flags: [] },
+      { riskLevel: 'LOW', requiresImmediateHelp: true, flags: [] },
+    ]) {
+      AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => ({ ...fixture, safety }) });
+      const session = await db.aIOrientationSession.create({ data: { userId: patientA.id } });
+      const result = await api('POST', `/orientation/sessions/${session.id}/messages`, patientA, { message: 'Necesito orientación' });
+      check(`model safety ${safety.riskLevel}/${safety.requiresImmediateHelp} escalates`, result.status === 200 && result.data.data.status === 'ESCALATED' && result.data.data.crisisResources.length > 0);
+      check('model escalation cannot recommend', (await api('GET', `/orientation/sessions/${session.id}/recommendations`, patientA)).status === 409);
+    }
+    const quotaSession = await db.aIOrientationSession.create({ data: { userId: patientA.id,
+      messages: { create: Array.from({ length: 20 }, () => ({ role: 'ASSISTANT', content: 'synthetic' })) } } });
+    const quotaCrisis = await api('POST', `/orientation/sessions/${quotaSession.id}/messages`, patientA, { message: 'No quiero vivir' });
+    check('safety takes precedence over message quota', quotaCrisis.status === 200 && quotaCrisis.data.data.status === 'ESCALATED');
+
+    const raceSession = await db.aIOrientationSession.create({ data: { userId: patientA.id } });
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => {
+      await db.aIOrientationSession.update({ where: { id: raceSession.id }, data: { status: 'ESCALATED', riskLevel: 'EMERGENCY' } });
+      return fixture;
+    } });
+    const race = await api('POST', `/orientation/sessions/${raceSession.id}/messages`, patientA, { message: 'Hola' });
+    check('in-flight ordinary result cannot overwrite escalation', race.status === 409 && (await db.aIOrientationSession.findUnique({ where: { id: raceSession.id } })).riskLevel === 'EMERGENCY');
+
+    const expired = await db.aIOrientationSession.create({ data: { userId: patientA.id,
+      createdAt: new Date(Date.now() - 366 * 86400000), messages: { create: { role: 'USER', content: 'synthetic expired' } } } });
+    await require('../src/ai/services/aiPrivacyService').purgeExpiredAIData();
+    check('retention removes expired session and messages', !(await db.aIOrientationSession.findUnique({ where: { id: expired.id } })) && await db.aIMessage.count({ where: { sessionId: expired.id } }) === 0);
+    const otherCount = await db.aIOrientationSession.count({ where: { userId: patientB.id } });
+    const deleted = await api('DELETE', '/orientation/history', patientA);
+    check('owner can remove all own AI history', deleted.status === 200 && await db.aIOrientationSession.count({ where: { userId: patientA.id } }) === 0);
+    check('deletion leaves other users untouched', await db.aIOrientationSession.count({ where: { userId: patientB.id } }) === otherCount);
+    check('deletion revokes consent', (await api('POST', '/orientation/sessions', patientA, {})).status === 403);
+    check('legacy consent rejected', (await api('POST', '/orientation/consent', patientA, {})).status === 400);
     console.log(`\nALL ${checks} INTEGRATION CHECKS PASSED SUCCESSFULLY!`);
   } finally {
     if (server) await new Promise(r => server.close(r));
+    if (db) await db.$disconnect();
     if (control) {
       await control.$executeRawUnsafe('DROP SCHEMA IF EXISTS "' + schema + '" CASCADE').catch(() => undefined);
       await control.$disconnect();
+    }
+    if (schemaFixture) {
+      // Only remove the one fixture created by this run, not a directory tree.
+      fs.unlinkSync(path.join(schemaFixture, 'schema.prisma'));
+      fs.rmdirSync(schemaFixture);
     }
   }
 }

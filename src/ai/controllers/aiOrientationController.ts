@@ -4,220 +4,68 @@ import prisma from '../../config/db';
 import { AuthenticatedRequest } from '../../middlewares/authMiddleware';
 import { AppError } from '../../middlewares/errorMiddleware';
 import { AIOrientationService } from '../services/aiOrientationService';
+import { aiPrivacyNotice, assertAIDataConfiguration } from '../services/aiPrivacyService';
 
-const messageSchema = z.object({
-  message: z
-    .string({ required_error: 'El mensaje es obligatorio' })
-    .trim()
-    .min(1, 'El mensaje no puede estar vacío')
-    .max(2000, 'El mensaje supera la longitud máxima permitida (2000 caracteres)'),
+type Handler = (req: AuthenticatedRequest, res: Response, next: NextFunction) => Promise<void>;
+const handle = (action: (req: AuthenticatedRequest, res: Response) => Promise<void>): Handler =>
+  async (req, res, next) => { try { await action(req, res); } catch (error) { next(error); } };
+
+export const getConsentStatus = handle(async (req, res) => {
+  const notice = aiPrivacyNotice();
+  const consent = await prisma.userConsent.findFirst({ where: {
+    userId: req.user!.userId, consentType: `AI_ORIENTATION_${notice.version}`,
+  } });
+  res.json({ status: 'success', data: { hasConsent: !!consent, acceptedAt: consent?.acceptedAt || null, ...notice } });
 });
 
-export const getConsentStatus = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-    const consent = await prisma.userConsent.findFirst({
-      where: {
-        userId,
-        consentType: 'AI_ORIENTATION_CONSENT',
-      },
-    });
+export const registerConsent = handle(async (req, res) => {
+  assertAIDataConfiguration();
+  const notice = aiPrivacyNotice();
+  const parsed = z.object({ version: z.literal(notice.version), adultConfirmed: z.literal(true) }).safeParse(req.body);
+  if (!parsed.success) throw new AppError('Acepta el aviso vigente y confirma que eres mayor de 18 años.', 400);
+  const where = { userId: req.user!.userId, consentType: `AI_ORIENTATION_${notice.version}` };
+  const existing = await prisma.userConsent.findFirst({ where });
+  const consent = existing || await prisma.userConsent.create({ data: where });
+  res.status(existing ? 200 : 201).json({ status: 'success', data: { consent } });
+});
 
-    res.status(200).json({
-      status: 'success',
-      data: {
-        hasConsent: !!consent,
-        acceptedAt: consent?.acceptedAt || null,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+export const deleteHistoryAndConsent = handle(async (req, res) => {
+  const userId = req.user!.userId;
+  await prisma.$transaction(async tx => {
+    await tx.aIOrientationSession.deleteMany({ where: { userId } });
+    await tx.userConsent.deleteMany({ where: { userId, consentType: { startsWith: 'AI_ORIENTATION_' } } });
+  });
+  res.json({ status: 'success', message: 'Historial de orientación eliminado y consentimiento retirado.' });
+});
 
-export const registerConsent = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
+export const createSession = handle(async (req, res) => {
+  const session = await AIOrientationService.createOrGetSession(req.user!.userId);
+  res.status(201).json({ status: 'success', data: { session } });
+});
 
-    const existing = await prisma.userConsent.findFirst({
-      where: {
-        userId,
-        consentType: 'AI_ORIENTATION_CONSENT',
-      },
-    });
+export const getActiveSession = handle(async (req, res) => {
+  const session = await AIOrientationService.getActiveSession(req.user!.userId);
+  res.json({ status: 'success', data: { session: session || null } });
+});
 
-    if (existing) {
-      res.status(200).json({
-        status: 'success',
-        message: 'Consentimiento ya registrado previamente',
-        data: { consent: existing },
-      });
-      return;
-    }
+export const getSessionById = handle(async (req, res) => {
+  const session = await AIOrientationService.getSessionById(req.user!.userId, req.params.id);
+  res.json({ status: 'success', data: { session } });
+});
 
-    const consent = await prisma.userConsent.create({
-      data: {
-        userId,
-        consentType: 'AI_ORIENTATION_CONSENT',
-      },
-    });
+export const sendMessage = handle(async (req, res) => {
+  const parsed = z.object({ message: z.string().trim().min(1).max(2000) }).safeParse(req.body);
+  if (!parsed.success) throw new AppError('El mensaje debe contener entre 1 y 2000 caracteres.', 400);
+  const data = await AIOrientationService.processMessage(req.user!.userId, req.params.id, parsed.data.message);
+  res.json({ status: 'success', data });
+});
 
-    res.status(201).json({
-      status: 'success',
-      message: 'Consentimiento de orientación con IA registrado con éxito',
-      data: { consent },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+export const completeSession = handle(async (req, res) => {
+  const data = await AIOrientationService.completeSession(req.user!.userId, req.params.id);
+  res.json({ status: 'success', data });
+});
 
-export const createSession = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-
-    // Verificar consentimiento antes de iniciar
-    const consent = await prisma.userConsent.findFirst({
-      where: {
-        userId,
-        consentType: 'AI_ORIENTATION_CONSENT',
-      },
-    });
-
-    if (!consent) {
-      throw new AppError(
-        'Debes aceptar el consentimiento informado antes de iniciar la orientación con IA.',
-        403
-      );
-    }
-
-    const session = await AIOrientationService.createOrGetSession(userId);
-
-    res.status(201).json({
-      status: 'success',
-      data: { session },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getActiveSession = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-    const session = await AIOrientationService.getActiveSession(userId);
-
-    res.status(200).json({
-      status: 'success',
-      data: { session: session || null },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getSessionById = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-    const { id } = req.params;
-
-    const session = await AIOrientationService.getSessionById(userId, id);
-
-    res.status(200).json({
-      status: 'success',
-      data: { session },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const sendMessage = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-    const { id } = req.params;
-
-    const parsed = messageSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(parsed.error.issues[0].message, 400);
-    }
-
-    const result = await AIOrientationService.processMessage(
-      userId,
-      id,
-      parsed.data.message
-    );
-
-    res.status(200).json({
-      status: 'success',
-      data: result,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const completeSession = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-    const { id } = req.params;
-
-    const recommendations = await AIOrientationService.completeSession(userId, id);
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Orientación completada exitosamente',
-      data: recommendations,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getRecommendations = async (
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user!.userId;
-    const { id } = req.params;
-
-    const recommendations = await AIOrientationService.getRecommendations(userId, id);
-
-    res.status(200).json({
-      status: 'success',
-      data: recommendations,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+export const getRecommendations = handle(async (req, res) => {
+  const data = await AIOrientationService.getRecommendations(req.user!.userId, req.params.id);
+  res.json({ status: 'success', data });
+});

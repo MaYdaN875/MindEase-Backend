@@ -1,5 +1,6 @@
 import app from './app';
 import prisma from './config/db';
+import { startAIRetention } from './ai/services/aiPrivacyService';
 import { seedDatabase } from './config/seed';
 import { startFinanceMaintenance } from './services/financeMaintenance';
 
@@ -8,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 const startServer = async (): Promise<void> => {
   await seedDatabase();
   const stopFinanceMaintenance = startFinanceMaintenance();
+  const stopAIRetention = startAIRetention();
 
   const server = app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
@@ -15,6 +17,7 @@ const startServer = async (): Promise<void> => {
 
   const gracefulShutdown = async (): Promise<void> => {
     stopFinanceMaintenance();
+    stopAIRetention();
     console.log('Shutting down server gracefully...');
     server.close(async () => {
       console.log('Express server closed.');

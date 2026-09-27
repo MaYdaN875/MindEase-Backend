@@ -12,7 +12,7 @@
     "test:stripe": "node -r ts-node/register tests/stripe.integration.js",
     "test:community": "node -r ts-node/register tests/community.integration.js",
     "test:support": "node -r ts-node/register tests/support.integration.js",
-    "test:ai:unit": "node --test -r ts-node/register tests/ai.policy.test.js",
+    "test:ai:unit": "node --test -r ts-node/register tests/ai.policy.test.js tests/ai.regression.test.js",
     "test:ai": "node -r ts-node/register tests/ai.integration.js",
     "test:chat": "node -r ts-node/register tests/chat.integration.js",
     "test:contact": "node -r ts-node/register tests/contact.integration.js",

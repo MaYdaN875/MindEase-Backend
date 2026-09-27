@@ -17,6 +17,13 @@ export const errorHandler = (
   _next: NextFunction
 ): void => {
   const statusCode = err instanceof AppError ? err.statusCode : 500;
+  // Prisma/parser/provider exceptions may contain conversation text. Never expose them for AI routes.
+  if (_req.originalUrl.startsWith('/api/ai/')) {
+    console.error(`[AI_REQUEST_FAILED] status=${statusCode}`);
+    res.status(statusCode).json({ status: 'error', statusCode,
+      message: err instanceof AppError ? err.message : 'No se pudo procesar la solicitud de orientación.' });
+    return;
+  }
   const message = err.message || 'Internal Server Error';
 
   console.error(`[Error] ${statusCode} - ${message}`, err);

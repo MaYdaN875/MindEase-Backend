@@ -6,15 +6,15 @@ export const suggestedSpecialtySchema = z.object({
 });
 
 export const preferencesSchema = z.object({
-  modality: z.enum(['ONLINE', 'IN_PERSON', 'ANY']).nullable().catch(null),
-  preferredTime: z.enum(['MORNING', 'AFTERNOON', 'EVENING', 'WEEKEND', 'ANY']).nullable().catch(null),
-  maxBudget: z.number().nonnegative().nullable().catch(null),
+  modality: z.enum(['ONLINE', 'IN_PERSON', 'ANY']).nullable(),
+  preferredTime: z.enum(['MORNING', 'AFTERNOON', 'EVENING', 'WEEKEND', 'ANY']).nullable(),
+  maxBudget: z.number().finite().nonnegative().nullable(),
 });
 
 export const needsProfileSchema = z.object({
-  primaryConcern: z.string().nullable().catch(null),
-  topics: z.array(z.string()).default([]),
-  suggestedSpecialties: z.array(suggestedSpecialtySchema).default([]),
+  primaryConcern: z.string().max(2000).nullable(),
+  topics: z.array(z.string().max(100)).max(20),
+  suggestedSpecialties: z.array(suggestedSpecialtySchema).max(10),
   preferences: preferencesSchema.default({
     modality: null,
     preferredTime: null,
@@ -23,20 +23,20 @@ export const needsProfileSchema = z.object({
 });
 
 export const aiSafetyEvaluationSchema = z.object({
-  riskLevel: z.enum(['LOW', 'MODERATE', 'HIGH', 'EMERGENCY']).default('LOW'),
-  requiresImmediateHelp: z.boolean().default(false),
-  flags: z.array(z.string()).default([]),
-  emergencyMessage: z.string().optional(),
+  riskLevel: z.enum(['LOW', 'MODERATE', 'HIGH', 'EMERGENCY']),
+  requiresImmediateHelp: z.boolean(),
+  flags: z.array(z.string().max(100)).max(20),
+  emergencyMessage: z.string().max(2000).optional(),
 });
 
 export const aiOrientationResultSchema = z.object({
-  assistantMessage: z.string().min(1),
+  assistantMessage: z.string().trim().min(1).max(4000),
   needsProfile: needsProfileSchema,
   safety: aiSafetyEvaluationSchema,
   conversation: z.object({
-    shouldContinue: z.boolean().default(true),
-    isComplete: z.boolean().default(false),
-    summary: z.string().optional(),
+    shouldContinue: z.boolean(),
+    isComplete: z.boolean(),
+    summary: z.string().max(2000).optional(),
   }),
 });
 
