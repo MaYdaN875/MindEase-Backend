@@ -53,8 +53,8 @@ test('Gemini validates output, finish reason, privacy and transport failures wit
     respond(text, reason, extra);
     await assert.rejects(provider.generateOrientation(context));
   }
-  global.fetch = async () => ({ ok: false, status: 429 });
-  await assert.rejects(provider.generateOrientation(context), e => e.statusCode === 503);
+  global.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) });
+  await assert.rejects(provider.generateOrientation(context), e => e.statusCode === 429 && e.code === 'AI_PROVIDER_QUOTA');
   global.fetch = async () => { throw new Error('SENSITIVE_SENTINEL'); };
   await assert.rejects(provider.generateOrientation(context), e => !e.message.includes('SENSITIVE_SENTINEL'));
   assert.deepEqual(errors, []);
@@ -72,4 +72,35 @@ test('privacy version changes with retention and Gemini requires operator confir
   assert.notEqual(first.version, aiPrivacyNotice().version);
   process.env.AI_CONVERSATION_RETENTION_DAYS = '-1';
   assert.throws(aiPrivacyNotice);
+});
+
+test('quota counts answered user turns only, including legacy failed messages', t => {
+  const { orientationQuota } = require('../src/ai/services/aiQuota');
+  const old = process.env.AI_MAX_MESSAGES_PER_SESSION;
+  t.after(() => { if (old === undefined) delete process.env.AI_MAX_MESSAGES_PER_SESSION; else process.env.AI_MAX_MESSAGES_PER_SESSION = old; });
+  process.env.AI_MAX_MESSAGES_PER_SESSION = '2';
+  const messages = ['ASSISTANT', 'USER', 'USER', 'ASSISTANT', 'USER'].map(role => ({ role }));
+  assert.deepEqual(orientationQuota(messages), { limit: 2, used: 1, remaining: 1 });
+  process.env.AI_MAX_MESSAGES_PER_SESSION = '0';
+  assert.throws(() => orientationQuota([]), e => e.code === 'AI_CONFIGURATION_ERROR');
+});
+
+test('transport retries transient errors only, respects deadlines and Retry-After', async t => {
+  const { fetchGemini } = require('../src/ai/providers/geminiTransport');
+  const original = global.fetch;
+  t.after(() => { global.fetch = original; });
+  let calls = 0;
+  global.fetch = async () => ++calls === 1 ? { ok: false, status: 503 } : { ok: true, json: async () => ({ recovered: true }) };
+  assert.deepEqual(await fetchGemini('https://example.test', {}, 2500), { recovered: true });
+  assert.equal(calls, 2);
+  calls = 0;
+  global.fetch = async () => { calls++; return { ok: false, status: 403 }; };
+  await assert.rejects(fetchGemini('https://example.test', {}, 1000), e => e.code === 'AI_PROVIDER_AUTH');
+  assert.equal(calls, 1);
+  calls = 0;
+  global.fetch = async () => { calls++; return { ok: false, status: 429, headers: { get: () => '60' }, json: async () => ({}) }; };
+  await assert.rejects(fetchGemini('https://example.test', {}, 1000), e => e.code === 'AI_PROVIDER_QUOTA' && e.retryAfterSeconds === 60);
+  assert.equal(calls, 1);
+  global.fetch = async (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('abort')), { once: true }));
+  await assert.rejects(fetchGemini('https://example.test', {}, 100), e => e.code === 'AI_PROVIDER_TIMEOUT');
 });

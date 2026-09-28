@@ -3,6 +3,7 @@ import { AIConversationContext, AIOrientationResult } from '../types/ai.types';
 import { buildSystemPrompt } from '../prompts/orientationPrompt';
 import { aiOrientationResultSchema } from '../schemas/aiOrientationSchema';
 import { AppError } from '../../middlewares/errorMiddleware';
+import { fetchGemini } from './geminiTransport';
 
 // Use the same required fields as the application validator. Never infer missing safety fields.
 export const orientationResponseSchema = {
@@ -47,7 +48,7 @@ export class GeminiAIProvider implements IAIProvider {
   async generateOrientation(context: AIConversationContext): Promise<AIOrientationResult> {
     if (!this.apiKey || !/^(models\/)?[a-zA-Z0-9.-]+$/.test(this.model) ||
         !Number.isFinite(this.timeoutMs) || this.timeoutMs < 100 || this.timeoutMs > 60000) {
-      throw new AppError('El servicio de orientación no está configurado correctamente.', 503);
+      throw new AppError('El servicio de orientación no está configurado correctamente.', 503, 'AI_CONFIGURATION_ERROR');
     }
     const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
     const firstUser = context.history.findIndex(m => m.role === 'USER');
@@ -58,13 +59,11 @@ export class GeminiAIProvider implements IAIProvider {
       if (last?.role === role) last.parts.push({ text: message.content });
       else contents.push({ role, parts: [{ text: message.content }] });
     }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(
+      const body = await fetchGemini(
         `https://generativelanguage.googleapis.com/v1beta/models/${this.model.replace(/^models\//, '')}:generateContent`,
         {
-          method: 'POST', signal: controller.signal,
+          method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: buildSystemPrompt(context.availableSpecialties) }] },
@@ -72,26 +71,23 @@ export class GeminiAIProvider implements IAIProvider {
             generationConfig: { temperature: 0.3, maxOutputTokens: 2048,
               responseMimeType: 'application/json', responseSchema: orientationResponseSchema },
           }),
-        },
+        }, this.timeoutMs,
       );
-      if (!response.ok) throw new AppError('El proveedor de orientación no está disponible. Inténtalo más tarde.', 503);
-      const body: any = await response.json();
       const candidate = body?.candidates?.[0];
       if (body?.promptFeedback?.blockReason || candidate?.finishReason !== 'STOP') {
-        throw new AppError('No se pudo generar una respuesta de orientación segura y completa.', 502);
+        throw new AppError('No se pudo generar una respuesta de orientación segura y completa.', 502,
+          body?.promptFeedback?.blockReason || candidate?.finishReason === 'SAFETY' ? 'AI_RESPONSE_BLOCKED' : 'AI_RESPONSE_INVALID');
       }
       const raw = candidate?.content?.parts?.filter((p: any) => !p.thought && typeof p.text === 'string')
         .map((p: any) => p.text).join('');
-      if (!raw || raw.length > 20000) throw new AppError('Respuesta de orientación inválida.', 502);
+      if (!raw || raw.length > 20000) throw new AppError('Respuesta de orientación inválida.', 502, 'AI_RESPONSE_INVALID');
       const parsed = aiOrientationResultSchema.safeParse(JSON.parse(raw));
-      if (!parsed.success) throw new AppError('Respuesta de orientación inválida.', 502);
+      if (!parsed.success) throw new AppError('Respuesta de orientación inválida.', 502, 'AI_RESPONSE_INVALID');
       return parsed.data;
     } catch (error) {
       // Do not log raw prompts, responses, SDK errors, URLs, or credentials.
       if (error instanceof AppError) throw error;
-      throw new AppError('No se pudo obtener una respuesta de orientación válida. Inténtalo más tarde.', 503);
-    } finally {
-      clearTimeout(timeout);
+      throw new AppError('No se pudo validar la respuesta. Tu mensaje no se descontó del límite.', 502, 'AI_RESPONSE_INVALID');
     }
   }
 }

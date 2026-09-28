@@ -54,9 +54,9 @@ export const getSessionById = handle(async (req, res) => {
 });
 
 export const sendMessage = handle(async (req, res) => {
-  const parsed = z.object({ message: z.string().trim().min(1).max(2000) }).safeParse(req.body);
-  if (!parsed.success) throw new AppError('El mensaje debe contener entre 1 y 2000 caracteres.', 400);
-  const data = await AIOrientationService.processMessage(req.user!.userId, req.params.id, parsed.data.message);
+  const parsed = z.object({ message: z.string().trim().min(1).max(2000), requestKey: z.string().uuid() }).safeParse(req.body);
+  if (!parsed.success) throw new AppError('Se requiere un mensaje de 1 a 2000 caracteres y una identificación válida del envío. Actualiza la aplicación.', 400, 'AI_INVALID_MESSAGE');
+  const data = await AIOrientationService.processMessage(req.user!.userId, req.params.id, parsed.data.message, parsed.data.requestKey);
   res.json({ status: 'success', data });
 });
 

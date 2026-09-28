@@ -22,6 +22,8 @@ async function main() {
   process.env.JWT_SECRET = randomUUID();
   process.env.NODE_ENV = 'test';
   process.env.AI_PROVIDER = 'mock';
+  process.env.AI_RATE_LIMIT_PER_MINUTE = '1000';
+  process.env.AI_MAX_MESSAGES_PER_SESSION = '20';
 
   const control = new PrismaClient({ datasources: { db: { url: source } } });
   let db, server, checks = 0;
@@ -58,6 +60,8 @@ async function main() {
       execFileSync(process.execPath, [prismaCli, 'db', 'push', '--skip-generate', '--schema', fixturePath], { env: process.env, stdio: 'pipe' });
       execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
         '--file', path.join(__dirname, '../prisma/migrations/20260927000000_ai_orientation/migration.sql')], { env: process.env, stdio: 'pipe' });
+      execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
+        '--file', path.join(__dirname, '../prisma/migrations/20260928000000_ai_message_requests/migration.sql')], { env: process.env, stdio: 'pipe' });
       execFileSync(process.execPath, [prismaCli, 'migrate', 'diff', '--from-schema-datasource', fullSchema,
         '--to-schema-datamodel', fullSchema, '--exit-code'], { env: process.env, stdio: 'pipe' });
       check('AI migration produces exact Prisma schema', true);
@@ -110,6 +114,7 @@ async function main() {
 
     // API fetch wrapper
     async function api(method, route, user, body) {
+      if (method === 'POST' && route.endsWith('/messages') && body) body = { requestKey: randomUUID(), ...body };
       const headers = { 'Content-Type': 'application/json' };
       if (user && user.token) headers['Authorization'] = `Bearer ${user.token}`;
       const res = await fetch(base + route, {
@@ -282,7 +287,7 @@ async function main() {
       check('model escalation cannot recommend', (await api('GET', `/orientation/sessions/${session.id}/recommendations`, patientA)).status === 409);
     }
     const quotaSession = await db.aIOrientationSession.create({ data: { userId: patientA.id,
-      messages: { create: Array.from({ length: 20 }, () => ({ role: 'ASSISTANT', content: 'synthetic' })) } } });
+      messages: { create: Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? 'ASSISTANT' : 'USER', content: 'synthetic', createdAt: new Date(Date.now() - 1000 + i) })) } } });
     const quotaCrisis = await api('POST', `/orientation/sessions/${quotaSession.id}/messages`, patientA, { message: 'No quiero vivir' });
     check('safety takes precedence over message quota', quotaCrisis.status === 200 && quotaCrisis.data.data.status === 'ESCALATED');
 
@@ -293,6 +298,74 @@ async function main() {
     } });
     const race = await api('POST', `/orientation/sessions/${raceSession.id}/messages`, patientA, { message: 'Hola' });
     check('in-flight ordinary result cannot overwrite escalation', race.status === 409 && (await db.aIOrientationSession.findUnique({ where: { id: raceSession.id } })).riskLevel === 'EMERGENCY');
+
+    const stableSession = await db.aIOrientationSession.create({ data: { userId: patientA.id } });
+    const { AppError } = require('../src/middlewares/errorMiddleware');
+    const stableKey = randomUUID();
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => { throw new AppError('Synthetic unavailable', 503, 'AI_PROVIDER_BUSY', true); } });
+    const failed = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Hola', requestKey: stableKey });
+    check('provider code and retryability reach client', failed.status === 503 && failed.data.code === 'AI_PROVIDER_BUSY' && failed.data.retryable);
+    check('failed attempt stores no conversation messages', await db.aIMessage.count({ where: { sessionId: stableSession.id } }) === 0);
+    let providerCalls = 0;
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => { providerCalls++; return fixture; } });
+    const success = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Hola', requestKey: stableKey });
+    const replay = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Hola', requestKey: stableKey });
+    check('retry succeeds once and counts one answered turn', success.status === 200 && success.data.data.quota.used === 1 && await db.aIMessage.count({ where: { sessionId: stableSession.id } }) === 2);
+    check('lost response replay never invokes provider twice', replay.status === 200 && providerCalls === 1 && replay.data.data.userMessage.id === success.data.data.userMessage.id);
+    const conflict = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Different content', requestKey: stableKey });
+    check('same key different content conflicts', conflict.status === 409 && conflict.data.code === 'AI_IDEMPOTENCY_CONFLICT');
+    check('receipt cannot be read by another user', (await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientB, { message: 'Hola', requestKey: stableKey })).status === 403);
+
+    process.env.AI_MAX_MESSAGES_PER_SESSION = '1';
+    const capped = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Otra pregunta' });
+    check('configurable answered-turn limit enforced', capped.status === 409 && capped.data.code === 'AI_SESSION_LIMIT');
+    process.env.AI_MAX_MESSAGES_PER_SESSION = '20';
+
+    let release, notify;
+    const entered = new Promise(r => { notify = r; });
+    const gate = new Promise(r => { release = r; });
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => { notify(); await gate; return fixture; } });
+    const parallelKey = randomUUID();
+    const first = api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Concurrent', requestKey: parallelKey });
+    await entered;
+    try {
+      const duplicate = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Concurrent', requestKey: parallelKey });
+      const other = await api('POST', `/orientation/sessions/${stableSession.id}/messages`, patientA, { message: 'Another message' });
+      check('parallel duplicate and different request are blocked', duplicate.data.code === 'AI_REQUEST_IN_PROGRESS' && other.data.code === 'AI_REQUEST_IN_PROGRESS');
+      check('cannot complete during inference', (await api('POST', `/orientation/sessions/${stableSession.id}/complete`, patientA, {})).data.code === 'AI_REQUEST_IN_PROGRESS');
+    } finally { release(); }
+    check('first parallel request completes normally', (await first).status === 200);
+
+    const recoverySession = await db.aIOrientationSession.create({ data: { userId: patientA.id } });
+    const recoveryKey = randomUUID();
+    await db.aIMessageRequest.create({ data: { sessionId: recoverySession.id, requestKey: recoveryKey,
+      contentHash: require('node:crypto').createHash('sha256').update('Recover').digest('hex'),
+      claimToken: randomUUID(), leaseUntil: new Date(Date.now() - 1000) } });
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => fixture });
+    const recovered = await api('POST', `/orientation/sessions/${recoverySession.id}/messages`, patientA, { message: 'Recover', requestKey: recoveryKey });
+    check('expired claim recovers after a process interruption', recovered.status === 200 && await db.aIMessage.count({ where: { sessionId: recoverySession.id } }) === 2);
+
+    const fencedKey = randomUUID();
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => {
+      await db.aIMessageRequest.update({ where: { sessionId_requestKey: { sessionId: recoverySession.id, requestKey: fencedKey } },
+        data: { claimToken: randomUUID() } });
+      return fixture;
+    } });
+    const fenced = await api('POST', `/orientation/sessions/${recoverySession.id}/messages`, patientA, { message: 'Obsolete worker', requestKey: fencedKey });
+    check('superseded worker cannot persist another response', fenced.status === 409 && await db.aIMessage.count({ where: { sessionId: recoverySession.id } }) === 2);
+
+    const newPatient = await createUser('Concurrent sessions', 'USER');
+    const newNotice = await api('GET', '/orientation/consent', newPatient);
+    await api('POST', '/orientation/consent', newPatient, { version: newNotice.data.data.version, adultConfirmed: true });
+    const sessions = await Promise.all([api('POST', '/orientation/sessions', newPatient, {}), api('POST', '/orientation/sessions', newPatient, {})]);
+    check('concurrent session creation returns the same session', sessions[0].status === 201 && sessions[1].status === 201 && sessions[0].data.data.session.id === sessions[1].data.data.session.id);
+
+    const terminalSession = await db.aIOrientationSession.create({ data: { userId: patientA.id } });
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => ({ ...fixture, conversation: { ...fixture.conversation, isComplete: true } }) });
+    const terminalKey = randomUUID();
+    await api('POST', `/orientation/sessions/${terminalSession.id}/messages`, patientA, { message: 'Final', requestKey: terminalKey });
+    const terminalReplay = await api('POST', `/orientation/sessions/${terminalSession.id}/messages`, patientA, { message: 'Final', requestKey: terminalKey });
+    check('completed session replays successful receipt', terminalReplay.status === 200 && terminalReplay.data.data.status === 'COMPLETED');
 
     const expired = await db.aIOrientationSession.create({ data: { userId: patientA.id,
       createdAt: new Date(Date.now() - 366 * 86400000), messages: { create: { role: 'USER', content: 'synthetic expired' } } } });

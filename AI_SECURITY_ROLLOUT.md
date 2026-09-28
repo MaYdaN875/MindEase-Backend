@@ -69,3 +69,42 @@ el bloqueo histórico indicado. No confundir estas dos verificaciones.
 Pruebas manuales pendientes: aceptación/revocación en ambos temas y texto grande, reentrada a sesión
 escalada, configuración y respuesta real de Gemini en un entorno de pruebas con datos sintéticos.
 Los regex y criterios de derivación aún requieren revisión por un profesional; no son diagnóstico.
+
+## Estabilidad de envíos (segunda entrega)
+
+Migración nueva: `20260928000000_ai_message_requests`. Aplicarla con `prisma migrate deploy` en el
+historial ya reconciliado, antes de iniciar el backend actualizado. No usar `resolve --applied` para
+esta tabla nueva ni modificar la migración de IA anterior. Actualizar Flutter junto con el backend:
+POST messages ahora requiere `requestKey` UUID. Regenerar Prisma y compilar durante el build.
+
+`AI_MAX_MESSAGES_PER_SESSION=20` cuenta intervenciones del usuario respondidas, NO la bienvenida
+ni respuestas de la IA. Se aceptan enteros de 1 a 100; los fallos no crean mensajes ni gastan cuota.
+La respuesta y las sesiones incluyen `quota: { limit, used, remaining }`. La evaluación local de
+crisis se ejecuta antes de aplicar el límite conversacional. El límite antiabuso por minuto permanece
+independiente y sí cuenta peticiones fallidas para evitar abuso.
+
+Cada envío conserva un recibo con hash del contenido, UUID, respuesta y estado en PostgreSQL.
+La pareja de mensajes y el recibo se confirman en una sola transacción. Los recibos se eliminan
+por cascada con el historial o la retención, y tienen la misma sensibilidad que los mensajes.
+El mismo UUID y texto recupera el resultado sin volver a llamar a Google; un texto distinto con el
+mismo UUID produce conflicto. Los fallos permiten reintentar con el mismo UUID. Un lease de 90 segundos
+permite recuperar un proceso caído; un token de propietario evita commits de workers reemplazados.
+Las llamadas externas no mantienen transacciones abiertas. Se serializa la creación de sesiones y
+el envío por sesión entre réplicas. No se promete que Google facture solo una llamada tras una caída
+de proceso: la garantía de idempotencia cubre el historial de MindEase.
+
+El adaptador realiza como máximo 3 intentos, con espera exponencial y jitter, dentro del presupuesto
+TOTAL `AI_TIMEOUT_MS` (máximo 60000). Respeta Retry-After; no reintenta autenticación, entrada inválida,
+respuesta bloqueada o inválida. Un 429 solo se reintenta automáticamente si incluye espera y no indica
+cuota diaria. No cambia el modelo configurado. Flutter espera hasta 75 segundos para un envío y 20
+para otras operaciones; una pérdida de respuesta se resuelve reutilizando el UUID, no reenviando uno nuevo.
+
+Errores públicos: `AI_PROVIDER_QUOTA`, `AI_PROVIDER_BUSY`, `AI_PROVIDER_TIMEOUT`,
+`AI_PROVIDER_NETWORK`, `AI_PROVIDER_AUTH`, `AI_PROVIDER_REQUEST_REJECTED`, `AI_RESPONSE_INVALID`,
+`AI_RESPONSE_BLOCKED`, `AI_SESSION_LIMIT`, `AI_REQUEST_IN_PROGRESS`, `AI_IDEMPOTENCY_CONFLICT`,
+`AI_RATE_LIMIT`. Incluyen `retryable` y, cuando aplica, `retryAfterSeconds`/cabecera Retry-After.
+Los logs conservan códigos/HTTP, nunca cuerpo, prompts, claves ni URLs del proveedor.
+
+Los borradores pendientes y sus UUID se conservan en memoria durante la ejecución de Flutter,
+se limpian cuando cambia la autenticación o se elimina el historial y no se escriben en preferencias.
+No se garantiza recuperación del borrador tras cerrar el proceso del teléfono.

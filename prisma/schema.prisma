@@ -791,9 +791,27 @@ model AIOrientationSession {
   updatedAt       DateTime              @updatedAt
   messages        AIMessage[]
   recommendations AIRecommendation[]
+  requests        AIMessageRequest[]
 
   @@index([userId, status])
   @@index([createdAt])
+}
+
+model AIMessageRequest {
+  id             String @id @default(uuid())
+  sessionId      String
+  session        AIOrientationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  requestKey     String
+  contentHash    String
+  status         String @default("PROCESSING")
+  claimToken     String
+  leaseUntil     DateTime
+  response       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([sessionId, requestKey])
+  @@index([sessionId, status])
 }
 
 model AIMessage {

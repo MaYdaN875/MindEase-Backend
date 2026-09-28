@@ -45,7 +45,7 @@ export const aiRateLimiter = (
     return next(
       new AppError(
         `Has alcanzado el límite de mensajes por minuto para orientación con IA. Inténtalo de nuevo en ${retryAfterSeconds} segundos.`,
-        429
+        429, 'AI_RATE_LIMIT', true, retryAfterSeconds
       )
     );
   }
