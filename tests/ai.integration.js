@@ -367,6 +367,38 @@ async function main() {
     const terminalReplay = await api('POST', `/orientation/sessions/${terminalSession.id}/messages`, patientA, { message: 'Final', requestKey: terminalKey });
     check('completed session replays successful receipt', terminalReplay.status === 200 && terminalReplay.data.data.status === 'COMPLETED');
 
+    const unsafeSession = await db.aIOrientationSession.create({ data: { userId: patientA.id } });
+    const unsafeKey = randomUUID();
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => ({
+      ...fixture, assistantMessage: 'Texto aparentemente correcto.',
+      needsProfile: { ...fixture.needsProfile, suggestedSpecialties: [{ name: 'Psicología Clínica', reason: 'Tienes depresión. Tienes depresión.' }] },
+      conversation: { shouldContinue: false, isComplete: true, summary: 'El usuario tiene depresión.' },
+    }) });
+    const sanitized = await api('POST', `/orientation/sessions/${unsafeSession.id}/messages`, patientA, { message: 'Hola', requestKey: unsafeKey });
+    const { AISafetyService } = require('../src/ai/services/aiSafetyService');
+    check('unsafe summary/reason replaces whole reply and prevents automatic completion', sanitized.status === 200 && sanitized.data.data.assistantMessage.content === AISafetyService.SAFE_REPLY && sanitized.data.data.status === 'ACTIVE');
+    const storedSafe = await db.aIOrientationSession.findUnique({ where: { id: unsafeSession.id } });
+    check('unsafe generated profile is not persisted', storedSafe.summary === AISafetyService.SAFE_SUMMARY && storedSafe.needsProfile.suggestedSpecialties.length === 0);
+    const replaySafe = await api('POST', `/orientation/sessions/${unsafeSession.id}/messages`, patientA, { message: 'Hola', requestKey: unsafeKey });
+    check('safe replacement survives idempotent replay', replaySafe.data.data.assistantMessage.content === AISafetyService.SAFE_REPLY);
+
+    const legacySession = await db.aIOrientationSession.create({ data: { userId: patientA.id, status: 'COMPLETED',
+      summary: 'Tienes depresión.', needsProfile: { ...fixture.needsProfile, primaryConcern: 'Tienes depresión.' },
+      messages: { create: [{ role: 'USER', content: 'Tienes depresión.' }, { role: 'ASSISTANT', content: 'Tienes depresión. Tienes depresión.' }] } } });
+    const legacyRead = await api('GET', `/orientation/sessions/${legacySession.id}`, patientA);
+    check('legacy assistant and summary are filtered without rewriting user text', legacyRead.data.data.session.summary === AISafetyService.SAFE_SUMMARY &&
+      legacyRead.data.data.session.messages.find(m => m.role === 'ASSISTANT').content === AISafetyService.SAFE_REPLY &&
+      legacyRead.data.data.session.messages.find(m => m.role === 'USER').content === 'Tienes depresión.');
+    const legacyRecommendations = await api('GET', `/orientation/sessions/${legacySession.id}/recommendations`, patientA);
+    check('recommendation endpoint never exposes legacy diagnostic summary', legacyRecommendations.status === 200 && legacyRecommendations.data.data.summary === AISafetyService.SAFE_SUMMARY);
+
+    const contextualSession = await db.aIOrientationSession.create({ data: { userId: patientA.id,
+      messages: { create: { role: 'USER', content: 'Quiero quitarme' } } } });
+    let contextualProviderCalls = 0;
+    AIProviderFactory.setProvider({ providerName: 'TEST', generateOrientation: async () => { contextualProviderCalls++; return fixture; } });
+    const contextual = await api('POST', `/orientation/sessions/${contextualSession.id}/messages`, patientA, { message: 'la vida' });
+    check('split risk expression escalates using prior user context before provider call', contextual.status === 200 && contextual.data.data.status === 'ESCALATED' && contextualProviderCalls === 0);
+
     const expired = await db.aIOrientationSession.create({ data: { userId: patientA.id,
       createdAt: new Date(Date.now() - 366 * 86400000), messages: { create: { role: 'USER', content: 'synthetic expired' } } } });
     await require('../src/ai/services/aiPrivacyService').purgeExpiredAIData();

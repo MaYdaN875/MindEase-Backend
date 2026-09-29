@@ -84,6 +84,46 @@ test('mock provider: returns valid structured output schema', async () => {
   assert.equal(result.safety.requiresImmediateHelp, false);
 });
 
+test('safety: replaces the whole unsafe output including repeated and formatted assertions', () => {
+  for (const output of ['Tienes depresión. Tienes depresión.', 'Tienes **depresión**. Más texto inseguro.',
+    'El usuario tiene depresión.', 'Debes tomar sertralina.', 'Toma 50 mg por la noche.']) {
+    const result = AISafetyService.sanitizeAndValidateAssistantOutput(output);
+    assert.equal(result.hasViolations, true);
+    assert.equal(result.safeText, AISafetyService.SAFE_REPLY);
+  }
+  const safe = 'Un profesional puede evaluar tus necesidades. Esta orientación no establece diagnósticos.';
+  assert.equal(AISafetyService.sanitizeAndValidateAssistantOutput(safe).safeText, safe);
+});
+
+test('safety: checks all generated fields and never clears model risk flags', async () => {
+  const base = await new MockAIProvider().generateOrientation({ history: [], userMessage: 'Hola', availableSpecialties: [] });
+  const changes = [
+    value => { value.conversation.summary = 'El usuario tiene depresión.'; },
+    value => { value.needsProfile.primaryConcern = 'Tienes depresión'; },
+    value => { value.needsProfile.topics = ['Tienes depresión']; },
+    value => { value.needsProfile.suggestedSpecialties = [{ name: 'Clínica', reason: 'Tienes depresión' }]; },
+    value => { value.needsProfile.suggestedSpecialties = [{ name: 'Tienes depresión', reason: 'General' }]; },
+  ];
+  for (const alter of changes) {
+    const value = structuredClone(base);
+    value.safety = { riskLevel: 'HIGH', requiresImmediateHelp: true, flags: ['MODEL_RISK'] };
+    alter(value);
+    const sanitized = AISafetyService.sanitizeOrientationResult(value);
+    assert.equal(sanitized.assistantMessage, AISafetyService.SAFE_REPLY);
+    assert.equal(sanitized.conversation.isComplete, false);
+    assert.deepEqual(sanitized.needsProfile.suggestedSpecialties, []);
+    assert.deepEqual(sanitized.safety, value.safety);
+    assert.equal(aiOrientationResultSchema.safeParse(sanitized).success, true);
+  }
+});
+
+test('safety: retains context from users only and combines split risk expressions', () => {
+  assert.equal(AISafetyService.evaluateConversation('la vida', [{ role: 'USER', content: 'Quiero quitarme' }]).riskLevel, 'EMERGENCY');
+  assert.equal(AISafetyService.evaluateConversation('Hola', [{ role: 'USER', content: 'No quiero vivir' }]).riskLevel, 'EMERGENCY');
+  assert.equal(AISafetyService.evaluateConversation('Hola', [{ role: 'ASSISTANT', content: 'No quiero vivir' }]).riskLevel, 'LOW');
+  assert.equal(AISafetyService.evaluateConversation('Hola', [], 'MODERATE').riskLevel, 'MODERATE');
+});
+
 test('mock provider: crisis message triggers emergency risk and immediate help flag', async () => {
   const provider = new MockAIProvider();
   const context = {

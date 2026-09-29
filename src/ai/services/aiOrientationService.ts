@@ -19,7 +19,12 @@ const busy = () => new AppError('Ya se está procesando un mensaje. Espera un mo
 export class AIOrientationService {
   private static async withResources(session: any) {
     if (!session) return session;
-    return { ...session, quota: orientationQuota(session.messages),
+    return { ...session,
+      summary: AISafetyService.sanitizeSummary(session.summary),
+      needsProfile: session.needsProfile ? AISafetyService.sanitizeNeedsProfile(session.needsProfile) : null,
+      messages: session.messages.map((m: any) => m.role === 'ASSISTANT'
+        ? { ...m, content: AISafetyService.sanitizeAndValidateAssistantOutput(m.content).safeText } : m),
+      quota: orientationQuota(session.messages),
       ...(requiresCrisisSupport(session) ? { crisisResources: await AISafetyService.getCrisisResources('MX') } : {}) };
   }
 
@@ -73,8 +78,8 @@ export class AIOrientationService {
     text = text.trim();
     const contentHash = createHash('sha256').update(text).digest('hex');
     const claimToken = randomUUID();
-    const preSafety = AISafetyService.evaluateUserInput(text);
-    const urgent = requiresCrisisSupport(preSafety);
+    let preSafety = AISafetyService.evaluateUserInput(text);
+    let urgent = requiresCrisisSupport(preSafety);
     const claimed = await prisma.$transaction(async tx => {
       const session = await this.lockSession(tx, userId, sessionId);
       await assertAIConsent(userId, tx);
@@ -85,6 +90,8 @@ export class AIOrientationService {
       if (session.status !== 'ACTIVE' || requiresCrisisSupport(session)) {
         throw new AppError('Esta sesión no admite más mensajes de orientación automática.', 409, 'AI_SESSION_CLOSED');
       }
+      preSafety = AISafetyService.evaluateConversation(text, session.messages, session.riskLevel);
+      urgent = requiresCrisisSupport(preSafety);
       const now = new Date();
       const active = await tx.aIMessageRequest.findFirst({ where: { sessionId, status: 'PROCESSING', leaseUntil: { gt: now } } });
       if (active && (!urgent || active.requestKey === requestKey)) throw busy();
@@ -102,20 +109,24 @@ export class AIOrientationService {
     });
     if (claimed.replay) {
       const current = await this.withResources(claimed.session);
-      return { ...claimed.replay as Prisma.JsonObject, status: current.status, riskLevel: current.riskLevel,
+      const receipt = claimed.replay as any;
+      return { ...receipt,
+        assistantMessage: { ...receipt.assistantMessage, content: AISafetyService.sanitizeAndValidateAssistantOutput(receipt.assistantMessage.content).safeText },
+        status: current.status, riskLevel: current.riskLevel,
         isComplete: current.status !== 'ACTIVE', quota: current.quota, crisisResources: current.crisisResources };
     }
 
     try {
       let result: any;
       if (!urgent) {
-        const history: AIChatMessage[] = claimed.session.messages.slice(-6).map(m => ({ role: m.role, content: m.content }));
+        const history: AIChatMessage[] = claimed.session.messages.slice(-6).map(m => ({ role: m.role,
+          content: m.role === 'ASSISTANT' ? AISafetyService.sanitizeAndValidateAssistantOutput(m.content).safeText : m.content }));
         const specialties = await prisma.specialty.findMany({ select: { name: true } });
         const raw = await AIProviderFactory.getProvider().generateOrientation({ userId, sessionId, history,
           userMessage: text, availableSpecialties: specialties.map(s => s.name) });
         const parsed = aiOrientationResultSchema.safeParse(raw);
         if (!parsed.success) throw new AppError('No se pudo validar la respuesta de orientación.', 502, 'AI_RESPONSE_INVALID');
-        result = parsed.data;
+        result = AISafetyService.sanitizeOrientationResult(parsed.data);
       }
       const escalated = urgent || requiresCrisisSupport(result.safety);
       const crisisResources = escalated ? await AISafetyService.getCrisisResources('MX') : undefined;

@@ -1,7 +1,69 @@
 import prisma from '../../config/db';
-import { AISafetyEvaluation, CrisisResourceData } from '../types/ai.types';
+import { AISafetyEvaluation, CrisisResourceData, AIOrientationResult, NeedsProfile, AIRiskLevelType } from '../types/ai.types';
+import { needsProfileSchema } from '../schemas/aiOrientationSchema';
 
 export class AISafetyService {
+  static readonly SAFE_REPLY = 'Esta herramienta no puede establecer diagnósticos ni indicar tratamientos. Podrías buscar apoyo humano; podría ser beneficioso consultar con un profesional para evaluar tu situación. ¿Qué tipo de apoyo te gustaría encontrar?';
+  static readonly SAFE_SUMMARY = 'Orientación general. La evaluación de necesidades corresponde a un profesional; no se ha establecido un diagnóstico.';
+
+  private static normalized(text: string): string {
+    return text.normalize('NFKD').replace(/[\u0300-\u036f\u200b-\u200f\ufeff]/g, '')
+      .replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  // Defense in depth only: these rules are not a clinical classifier or proof of safe output.
+  private static readonly OUTPUT_VIOLATIONS = [
+    /\b(tienes?|sufres? de|padeces?|presentas?)\s+(?:un[ao]?\s+|de\s+)?(?:depresion|ansiedad clinica|trastorno|bipolaridad|esquizofrenia|tdah)\b/i,
+    /\b(?:tu diagnostico es|el diagnostico (?:es|del usuario)|te diagnostico|diagnosticad[oa] con)\b/i,
+    /\b(?:te receto|debes tomar|debes suspender|deja de tomar|suspende (?:el|la|tu)|cambia (?:la|tu) dosis|aumenta (?:la|tu) dosis|reduce (?:la|tu) dosis)\b/i,
+    /\b(?:toma|tomar|tomate)\s+(?:(?:el|la|un|una)\s+)?(?:medicamento|antidepresivo|ansiolitico|farmaco|pastilla|sertralina|fluoxetina|alprazolam)\b/i,
+    /\b(?:toma|tomar|tomate)\b.{0,60}\b\d+(?:[.,]\d+)?\s*(?:mg|miligramos|ml)\b/i,
+    /\b(?:cura garantizada|te curare|no necesitas (?:un |ir al )?(?:psicologo|terapeuta))\b/i,
+  ];
+
+  private static unsafe(text: string): boolean {
+    const normalized = this.normalized(text);
+    return [...this.DIAGNOSTIC_VIOLATIONS, ...this.OUTPUT_VIOLATIONS].some(pattern => pattern.test(normalized));
+  }
+
+  static sanitizeNeedsProfile(value: unknown): NeedsProfile {
+    const parsed = needsProfileSchema.safeParse(value);
+    const empty: NeedsProfile = { primaryConcern: null, topics: [], suggestedSpecialties: [],
+      preferences: { modality: null, preferredTime: null, maxBudget: null } };
+    if (!parsed.success) return empty;
+    const profile = parsed.data;
+    const texts = [profile.primaryConcern || '', ...profile.topics,
+      ...profile.suggestedSpecialties.flatMap(s => [s.name, s.reason])];
+    return texts.some(text => this.unsafe(text)) ? { ...empty, preferences: profile.preferences } : profile;
+  }
+
+  static sanitizeOrientationResult(result: AIOrientationResult): AIOrientationResult {
+    const texts = [result.assistantMessage, result.conversation.summary || '',
+      result.needsProfile.primaryConcern || '', ...result.needsProfile.topics,
+      ...result.needsProfile.suggestedSpecialties.flatMap(s => [s.name, s.reason])];
+    if (!texts.some(text => this.unsafe(text))) return result;
+    return { ...result, assistantMessage: this.SAFE_REPLY,
+      needsProfile: { primaryConcern: null, topics: [], suggestedSpecialties: [], preferences: result.needsProfile.preferences },
+      conversation: { shouldContinue: true, isComplete: false, summary: this.SAFE_SUMMARY },
+      // Never remove or reduce risk reported by the model while replacing its prose.
+    };
+  }
+
+  static sanitizeSummary(text: string | null): string | null {
+    return text && this.unsafe(text) ? this.SAFE_SUMMARY : text;
+  }
+
+  static evaluateConversation(text: string, history: Array<{ role: string; content: string }>, priorRisk: AIRiskLevelType = 'LOW'): AISafetyEvaluation {
+    const userTexts = history.filter(m => m.role === 'USER').slice(-12).map(m => m.content);
+    const candidates = [this.evaluateUserInput(text),
+      ...userTexts.map(t => this.evaluateUserInput(t)),
+      this.evaluateUserInput([...userTexts, text].join(' '))];
+    const ranks = { LOW: 0, MODERATE: 1, HIGH: 2, EMERGENCY: 3 };
+    const strongest = candidates.reduce((a, b) => ranks[b.riskLevel] > ranks[a.riskLevel] ? b : a);
+    const riskLevel = ranks[priorRisk] > ranks[strongest.riskLevel] ? priorRisk : strongest.riskLevel;
+    return { ...strongest, riskLevel, requiresImmediateHelp: riskLevel === 'HIGH' || riskLevel === 'EMERGENCY',
+      flags: [...strongest.flags, ...(riskLevel !== candidates[0].riskLevel ? ['CONTEXT_RISK_RETAINED'] : [])] };
+  }
   // Patrones de alto riesgo (Suicidio, autolesión, violencia inminente)
   private static readonly EMERGENCY_PATTERNS = [
     /\b(suicid\w*|quitarme la vida|matar(me)?|no quiero vivir|acabar con mi vida)\b/i,
@@ -33,7 +95,7 @@ export class AISafetyService {
    * Evaluación previa del mensaje del usuario antes de enviarlo al modelo.
    */
   static evaluateUserInput(text: string): AISafetyEvaluation {
-    const trimmed = text.trim();
+    const trimmed = this.normalized(text);
     const flags: string[] = [];
 
     for (const pattern of this.EMERGENCY_PATTERNS) {
@@ -87,22 +149,8 @@ export class AISafetyService {
     safeText: string;
     hasViolations: boolean;
   } {
-    let safeText = text;
-    let hasViolations = false;
-
-    for (const pattern of this.DIAGNOSTIC_VIOLATIONS) {
-      if (pattern.test(safeText)) {
-        hasViolations = true;
-        // Reemplazar la frase indebida con fórmula prudente
-        safeText = safeText.replace(
-          pattern,
-          'podría ser beneficioso consultar con un profesional para evaluar tu situación'
-        );
-      }
-    }
-
-    // Asegurar que contenga disclaimer si se detectan temas delicados
-    return { safeText, hasViolations };
+    const hasViolations = this.unsafe(text);
+    return { safeText: hasViolations ? this.SAFE_REPLY : text, hasViolations };
   }
 
   /**

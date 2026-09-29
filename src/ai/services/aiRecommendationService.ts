@@ -1,4 +1,5 @@
 import prisma from '../../config/db';
+import { AISafetyService } from './aiSafetyService';
 import { assertCanRecommend } from './aiSessionPolicy';
 import { AppError } from '../../middlewares/errorMiddleware';
 import { eligibleProfessionalWhere } from '../../services/clinicalPolicy';
@@ -27,6 +28,7 @@ export class AIRecommendationService {
 
     assertCanRecommend(session);
     if (session.status !== 'COMPLETED') throw new AppError('Primero debes finalizar la orientación.', 409);
+    needsProfile = AISafetyService.sanitizeNeedsProfile(needsProfile);
 
     // 1. Resolver especialidades reales en la base de datos
     const allDbSpecialties = await prisma.specialty.findMany();
@@ -44,7 +46,7 @@ export class AIRecommendationService {
         resolvedSpecialties.push({
           id: match.id,
           name: match.name,
-          reason: suggested.reason,
+          reason: AISafetyService.sanitizeAndValidateAssistantOutput(suggested.reason).safeText,
         });
       }
     }
@@ -180,7 +182,7 @@ export class AIRecommendationService {
       sessionId,
       isComplete: session.status === 'COMPLETED',
       riskLevel: session.riskLevel,
-      summary: session.summary,
+      summary: AISafetyService.sanitizeSummary(session.summary),
       suggestedSpecialties: resolvedSpecialties,
       recommendedPsychologists: scoredPsychologists,
     };

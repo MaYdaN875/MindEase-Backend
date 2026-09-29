@@ -108,3 +108,29 @@ Los logs conservan códigos/HTTP, nunca cuerpo, prompts, claves ni URLs del prov
 Los borradores pendientes y sus UUID se conservan en memoria durante la ejecución de Flutter,
 se limpian cuando cambia la autenticación o se elimina el historial y no se escriben en preferencias.
 No se garantiza recuperación del borrador tras cerrar el proceso del teléfono.
+
+## Defensa de contenido y recursos de ayuda (tercera entrega)
+
+Se inspeccionan mensaje del asistente, resumen, motivo principal, temas, nombres sugeridos y razones.
+Ante una infracción detectada se sustituye la respuesta completa por texto controlado, se descarta
+el perfil generado y se evita la finalización automática. Se conservan las señales de riesgo del
+modelo para no impedir una escalación. El texto se normaliza para detectar acentos, saltos de línea
+y formato simple; no se hacen sustituciones parciales que dejen una segunda afirmación peligrosa.
+
+La lectura del historial y los recibos de idempotencia también filtran contenido anterior. No se
+reescribe ni se oculta el texto del usuario, y esta protección de lectura no borra registros originales.
+El endpoint de recomendaciones filtra perfiles/resúmenes guardados antes de devolver resultados.
+
+La evaluación previa considera los últimos 12 mensajes del usuario y el actual, sin usar mensajes
+del asistente como afirmaciones del paciente. Conserva el mayor riesgo encontrado y el estado previo;
+también reconoce expresiones divididas entre mensajes. Son reglas conservadoras y limitadas: pueden
+producir falsos positivos (negaciones, citas, hechos históricos) o no detectar alusiones indirectas.
+No constituyen evaluación clínica ni una garantía frente a todas las respuestas dañinas. Los criterios
+deben revisarse con un profesional antes de atender conversaciones reales sensibles.
+
+Los contactos de México abren `tel:` solo cuando el usuario pulsa el botón; no inician llamadas
+automáticamente. Se rechazan esquemas arbitrarios y secuencias USSD. Si el dispositivo no puede abrir
+el marcador, se mantiene el número y un aviso para marcarlo manualmente. No se afirma que todos los
+recursos sean gratuitos o estén disponibles 24/7. Esta entrega no cambia los números del catálogo.
+
+No requiere otra migración de base de datos. Sí requiere desplegar el backend y actualizar Flutter.
