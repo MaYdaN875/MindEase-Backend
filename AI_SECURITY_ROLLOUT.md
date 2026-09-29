@@ -93,10 +93,9 @@ Las llamadas externas no mantienen transacciones abiertas. Se serializa la creac
 el envío por sesión entre réplicas. No se promete que Google facture solo una llamada tras una caída
 de proceso: la garantía de idempotencia cubre el historial de MindEase.
 
-El adaptador realiza como máximo 3 intentos, con espera exponencial y jitter, dentro del presupuesto
-TOTAL `AI_TIMEOUT_MS` (máximo 60000). Respeta Retry-After; no reintenta autenticación, entrada inválida,
-respuesta bloqueada o inválida. Un 429 solo se reintenta automáticamente si incluye espera y no indica
-cuota diaria. No cambia el modelo configurado. Flutter espera hasta 75 segundos para un envío y 20
+El adaptador realiza una sola llamada por envío, sin reintentos automáticos, dentro del presupuesto
+`AI_TIMEOUT_MS` (máximo 60000). Un control compartido en PostgreSQL limita la frecuencia y respeta
+Retry-After. No cambia el modelo configurado. Flutter espera hasta 75 segundos para un envío y 20
 para otras operaciones; una pérdida de respuesta se resuelve reutilizando el UUID, no reenviando uno nuevo.
 
 Errores públicos: `AI_PROVIDER_QUOTA`, `AI_PROVIDER_BUSY`, `AI_PROVIDER_TIMEOUT`,
@@ -134,3 +133,31 @@ el marcador, se mantiene el número y un aviso para marcarlo manualmente. No se 
 recursos sean gratuitos o estén disponibles 24/7. Esta entrega no cambia los números del catálogo.
 
 No requiere otra migración de base de datos. Sí requiere desplegar el backend y actualizar Flutter.
+
+## Control de capacidad del proveedor (cuarta entrega)
+
+Esta entrega SÍ requiere la migración aditiva `20260929000000_ai_provider_gate`.
+Ejecutar `npx prisma migrate deploy` antes de servir tráfico con el nuevo backend.
+No usar `resolve --applied` si la tabla aún no existe. No se modifica ni borra información existente.
+
+`AI_GEMINI_REQUESTS_PER_MINUTE=4` por defecto: una admisión cada 15 segundos, compartida por
+usuarios, modelos y réplicas que utilicen la misma base de datos. No se mantiene una cola ni
+se reenvía automáticamente: el cliente conserva el borrador y muestra una espera. Cada admisión
+permite como máximo una llamada HTTP. Las solicitudes rechazadas por el control local no llegan
+a Google. Otros proyectos/despliegues que usen la misma cuota de Google no quedan coordinados
+si utilizan otra base de datos. Ajustar el límite según la capacidad real y dejar margen.
+
+Un 429 pausa el acceso al menos 60 segundos, o más si Google entrega Retry-After. Una cuota
+diaria identificada por metadata aplica una pausa conservadora de 24 horas desde el error, NO
+una predicción del reinicio de Google. Puede retener el acceso después del reinicio real; no
+pretende maximizar uso del plan gratuito. Errores transitorios de servidor/red pausan al menos
+30 segundos. El timeout conserva el espaciado de admisión. No hay failover ni consumo pagado
+automático. La detección local de riesgo ocurre antes del control del proveedor.
+
+Flutter no ofrece repetir el mismo texto cuando el servidor marca el error como no reintentable.
+Permite editar para que nuevos mensajes de riesgo puedan ser evaluados por el backend; modificar
+el texto NO evade el control global de Google. No se registran prompts, claves ni respuestas en
+la tabla de control. Reiniciar la app o una réplica no reinicia la pausa compartida.
+
+Esta entrega no incluye cuestionario sin IA ni comparativa de proveedores. Para comparar después,
+usar casos ficticios fijos y medir éxito, latencia, seguridad y costo real sin reintentos ocultos.

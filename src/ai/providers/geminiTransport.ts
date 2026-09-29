@@ -1,5 +1,5 @@
-import { setTimeout as wait } from 'node:timers/promises';
 import { AppError } from '../../middlewares/errorMiddleware';
+import { geminiAdmission } from './geminiAdmission';
 
 function retryDelay(response: Response, body: any): number | undefined {
   const header = response.headers?.get?.('retry-after');
@@ -15,11 +15,12 @@ function retryDelay(response: Response, body: any): number | undefined {
 }
 
 export async function fetchGemini(endpoint: string, options: RequestInit, budgetMs: number): Promise<any> {
+  // Admission precedes the network call. Never retry an upstream request automatically.
+  await geminiAdmission.acquire();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), budgetMs);
-  const deadline = Date.now() + budgetMs;
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    {
       let failure: AppError;
       try {
         const response = await fetch(endpoint, { ...options, signal: controller.signal });
@@ -36,8 +37,14 @@ export async function fetchGemini(endpoint: string, options: RequestInit, budget
         const dailyQuota = Array.isArray(body?.error?.details) && body.error.details.some((d: any) =>
           Array.isArray(d?.violations) && d.violations.some((v: any) => /perday|per_day|daily/i.test(String(v?.quotaId || ''))));
         if (response.status === 429) {
-          failure = new AppError('Google alcanzó un límite de solicitudes o cuota. Tu mensaje sigue disponible para reintentar.',
-            429, 'AI_PROVIDER_QUOTA', !dailyQuota && delay !== undefined, delay, 429);
+          // Daily quota: conservative 24h hold, NOT a claimed provider reset time.
+          const seconds = dailyQuota ? 86400 : Math.max(60, delay || 0);
+          const code = dailyQuota ? 'AI_PROVIDER_DAILY_QUOTA' : 'AI_PROVIDER_QUOTA';
+          await geminiAdmission.pause(seconds, code);
+          failure = new AppError(dailyQuota
+            ? 'Google agotó la cuota diaria. Conservamos tu texto; reintentar en segundos no resolverá el límite.'
+            : 'Google alcanzó un límite de solicitudes o cuota. Conservamos tu texto. La espera no garantiza que la cuota se haya restablecido.',
+          429, code, !dailyQuota, dailyQuota ? undefined : seconds, 429);
         } else if (response.status === 503 || response.status === 502 || response.status === 500 || response.status === 504) {
           failure = new AppError('Google no puede responder temporalmente. Conservamos tu mensaje.',
             503, 'AI_PROVIDER_BUSY', true, delay, response.status);
@@ -52,12 +59,12 @@ export async function fetchGemini(endpoint: string, options: RequestInit, budget
         if (controller.signal.aborted) throw error;
         failure = new AppError('No fue posible conectar con Google. Conservamos tu mensaje.', 503, 'AI_PROVIDER_NETWORK', true);
       }
-      const delayMs = failure.retryAfterSeconds !== undefined ? failure.retryAfterSeconds * 1000
-        : 500 * 2 ** attempt + Math.floor(Math.random() * 250);
-      if (!failure.retryable || attempt === 2 || Date.now() + delayMs >= deadline) throw failure;
-      await wait(delayMs, undefined, { signal: controller.signal });
+      if (failure.retryable && failure.statusCode !== 429) {
+        failure.retryAfterSeconds = Math.max(30, failure.retryAfterSeconds || 0);
+        await geminiAdmission.pause(failure.retryAfterSeconds, failure.code || 'AI_PROVIDER_BUSY');
+      }
+      throw failure;
     }
-    throw new AppError('El proveedor no está disponible.', 503, 'AI_PROVIDER_BUSY', true);
   } catch (error) {
     if (controller.signal.aborted) throw new AppError('La respuesta tardó demasiado. Tu mensaje no se perdió; puedes reintentar.', 504, 'AI_PROVIDER_TIMEOUT', true);
     if (error instanceof AppError) throw error;

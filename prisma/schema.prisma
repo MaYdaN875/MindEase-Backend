@@ -797,6 +797,12 @@ model AIOrientationSession {
   @@index([createdAt])
 }
 
+model AIProviderGate {
+  key           String   @id
+  nextAllowedAt DateTime
+  reason        String
+}
+
 model AIMessageRequest {
   id             String @id @default(uuid())
   sessionId      String

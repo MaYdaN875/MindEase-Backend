@@ -62,12 +62,27 @@ async function main() {
         '--file', path.join(__dirname, '../prisma/migrations/20260927000000_ai_orientation/migration.sql')], { env: process.env, stdio: 'pipe' });
       execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
         '--file', path.join(__dirname, '../prisma/migrations/20260928000000_ai_message_requests/migration.sql')], { env: process.env, stdio: 'pipe' });
+      execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
+        '--file', path.join(__dirname, '../prisma/migrations/20260929000000_ai_provider_gate/migration.sql')], { env: process.env, stdio: 'pipe' });
       execFileSync(process.execPath, [prismaCli, 'migrate', 'diff', '--from-schema-datasource', fullSchema,
         '--to-schema-datamodel', fullSchema, '--exit-code'], { env: process.env, stdio: 'pipe' });
       check('AI migration produces exact Prisma schema', true);
     }
 
     db = require('../src/config/db').default;
+
+    const { geminiAdmission } = require('../src/ai/providers/geminiAdmission');
+    process.env.AI_GEMINI_REQUESTS_PER_MINUTE = '4';
+    const admissions = await Promise.allSettled(Array.from({ length: 8 }, () => geminiAdmission.acquire()));
+    check('global provider gate admits only one concurrent request', admissions.filter(r => r.status === 'fulfilled').length === 1);
+    check('other requests receive a local wait without a provider call', admissions.filter(r => r.status === 'rejected').every(r => r.reason.code === 'AI_PROVIDER_RATE_LIMIT' && r.reason.retryAfterSeconds > 0));
+    await geminiAdmission.pause(86400, 'AI_PROVIDER_DAILY_QUOTA');
+    await geminiAdmission.pause(30, 'AI_PROVIDER_BUSY');
+    await assert.rejects(geminiAdmission.acquire(), e => e.code === 'AI_PROVIDER_DAILY_QUOTA' && !e.retryable && e.retryAfterSeconds === undefined);
+    check('shorter pause cannot overwrite daily provider hold', true);
+    await db.$executeRaw`UPDATE "AIProviderGate" SET "nextAllowedAt" = clock_timestamp() - interval '1 second'`;
+    await geminiAdmission.acquire();
+    check('provider gate recovers when hold expires', true);
 
     // Seed roles
     const roles = ['USER', 'PSYCHOLOGIST_VERIFIED', 'PSYCHOLOGIST_APPLICANT', 'ADMIN'];

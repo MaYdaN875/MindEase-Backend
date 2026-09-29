@@ -1,4 +1,8 @@
 const { test } = require('node:test');
+const { geminiAdmission } = require('../src/ai/providers/geminiAdmission');
+// Transport unit tests never access a real DB or provider.
+geminiAdmission.acquire = async () => {};
+geminiAdmission.pause = async () => {};
 const assert = require('node:assert/strict');
 const { GeminiAIProvider } = require('../src/ai/providers/geminiAIProvider');
 const { MockAIProvider } = require('../src/ai/providers/mockAIProvider');
@@ -85,17 +89,25 @@ test('quota counts answered user turns only, including legacy failed messages', 
   assert.throws(() => orientationQuota([]), e => e.code === 'AI_CONFIGURATION_ERROR');
 });
 
-test('transport retries transient errors only, respects deadlines and Retry-After', async t => {
+test('transport never automatically retries, respects deadlines and Retry-After', async t => {
   const { fetchGemini } = require('../src/ai/providers/geminiTransport');
   const original = global.fetch;
   t.after(() => { global.fetch = original; });
   let calls = 0;
   global.fetch = async () => ++calls === 1 ? { ok: false, status: 503 } : { ok: true, json: async () => ({ recovered: true }) };
-  assert.deepEqual(await fetchGemini('https://example.test', {}, 2500), { recovered: true });
-  assert.equal(calls, 2);
+  await assert.rejects(fetchGemini('https://example.test', {}, 2500), e => e.code === 'AI_PROVIDER_BUSY');
+  assert.equal(calls, 1);
   calls = 0;
   global.fetch = async () => { calls++; return { ok: false, status: 403 }; };
   await assert.rejects(fetchGemini('https://example.test', {}, 1000), e => e.code === 'AI_PROVIDER_AUTH');
+  assert.equal(calls, 1);
+  calls = 0;
+  global.fetch = async () => { calls++; return { ok: false, status: 429, headers: { get: () => '1' }, json: async () => ({}) }; };
+  await assert.rejects(fetchGemini('https://example.test', {}, 20000), e => e.retryAfterSeconds === 60);
+  assert.equal(calls, 1);
+  calls = 0;
+  global.fetch = async () => { calls++; return { ok: false, status: 429, json: async () => ({ error: { details: [{ violations: [{ quotaId: 'RequestsPerDay' }] }] } }) }; };
+  await assert.rejects(fetchGemini('https://example.test', {}, 20000), e => e.code === 'AI_PROVIDER_DAILY_QUOTA' && !e.retryable && e.retryAfterSeconds === undefined);
   assert.equal(calls, 1);
   calls = 0;
   global.fetch = async () => { calls++; return { ok: false, status: 429, headers: { get: () => '60' }, json: async () => ({}) }; };
