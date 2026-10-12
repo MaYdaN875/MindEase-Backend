@@ -30,7 +30,14 @@ export const sendEmail = async (message: EmailMessage): Promise<void> => {
   });
 
   if (!response.ok) {
-    console.error(`[EMAIL:resend] failed status=${response.status}`);
+    let errorName = 'unknown';
+    try {
+      const body = (await response.json()) as { name?: string };
+      if (typeof body.name === 'string') errorName = body.name;
+    } catch (_e) {
+      // Body was not JSON; keep the generic label.
+    }
+    console.error(`[EMAIL:resend] failed status=${response.status} name=${errorName}`);
     throw new Error('Email provider rejected the request');
   }
 };
