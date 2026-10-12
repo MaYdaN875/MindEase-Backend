@@ -54,6 +54,7 @@ export const getProfile = async (
           name: user.name,
           phone: user.phone,
           roles: rolesList,
+          emailVerified: user.emailVerifiedAt !== null,
           psychologistProfile: user.psychologistProfile,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,

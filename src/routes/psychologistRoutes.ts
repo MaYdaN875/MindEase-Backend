@@ -11,6 +11,7 @@ import {
   getPsychologistDashboard,
 } from '../controllers/psychologistController';
 import { authMiddleware } from '../middlewares/authMiddleware';
+import { requireVerifiedEmail } from '../middlewares/emailVerifiedMiddleware';
 import { upload } from '../middlewares/uploadMiddleware';
 
 import {
@@ -40,7 +41,7 @@ router.get('/me/dashboard', getPsychologistDashboard as any);
 router.put('/me/profile', updateProfile as any);
 router.post('/me/documents', upload.single('document'), uploadDocument as any);
 router.delete('/me/documents/:documentId', deleteDocument as any);
-router.post('/me/submit-review', submitForReview as any);
+router.post('/me/submit-review', requireVerifiedEmail as any, submitForReview as any);
 router.get('/me/review-status', getReviewStatus as any);
 
 // Availability & Scheduling (for logged in psychologist)
