@@ -46,7 +46,7 @@ export class AIRecommendationService {
         resolvedSpecialties.push({
           id: match.id,
           name: match.name,
-          reason: AISafetyService.sanitizeAndValidateAssistantOutput(suggested.reason).safeText,
+          reason: AISafetyService.sanitizeSpecialtyReason(suggested.reason),
         });
       }
     }
@@ -59,7 +59,7 @@ export class AIRecommendationService {
       resolvedSpecialties.push({
         id: defaultSpec.id,
         name: defaultSpec.name,
-        reason: 'Especialidad base recomendada para evaluación y acompañamiento inicial.',
+        reason: 'Opción general del catálogo para explorar; no se identificó una especialidad coincidente con las sugerencias de la orientación.',
       });
     }
 

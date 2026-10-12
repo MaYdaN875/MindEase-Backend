@@ -5,6 +5,11 @@ import prisma from '../config/db';
 import { hashPassword, comparePassword } from '../utils/hash';
 import { generateToken } from '../utils/jwt';
 import { AppError } from '../middlewares/errorMiddleware';
+import { AuthenticatedRequest } from '../middlewares/authMiddleware';
+import { sendEmail } from '../services/emailService';
+import { sendVerificationCode, verifyCode } from '../services/emailVerificationService';
+
+const hashResetToken = (token: string): string => crypto.createHash('sha256').update(token).digest('hex');
 
 const registerSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -94,6 +99,12 @@ export const register = async (
       });
     }
 
+    try {
+      await sendVerificationCode(user);
+    } catch (_e) {
+      console.error('[EMAIL_VERIFICATION] could not send initial code; user can request a resend');
+    }
+
     const rolesList = user.userRoles.map((ur) => ur.role.name);
     const token = generateToken({ userId: user.id, roles: rolesList });
 
@@ -107,6 +118,7 @@ export const register = async (
           phone: user.phone,
           roles: rolesList,
           createdAt: user.createdAt,
+          emailVerified: false,
         },
         token,
       },
@@ -156,6 +168,7 @@ export const login = async (
           name: user.name,
           phone: user.phone,
           roles: rolesList,
+          emailVerified: user.emailVerifiedAt !== null,
         },
         token,
       },
@@ -194,17 +207,20 @@ export const forgotPassword = async (
     await prisma.user.update({
       where: { id: user.id },
       data: {
-        resetPasswordToken: resetToken,
+        resetPasswordToken: hashResetToken(resetToken),
         resetPasswordExp,
       },
     });
 
-    console.log(`\n==========================================`);
-    console.log(`PASSWORD RESET FOR: ${user.email}`);
-    console.log(`Token: ${resetToken}`);
-    console.log(`Reset link: http://localhost:3000/api/auth/reset-password?token=${resetToken}`);
-    console.log(`==========================================\n`);
-
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: 'Recupera tu contraseña de MindEase',
+        text: `Usa este código para restablecer tu contraseña (vence en 1 hora): ${resetToken}. Si no lo solicitaste, ignora este mensaje.`,
+      });
+    } catch (_e) {
+      console.error('[PASSWORD_RESET] email delivery failed');
+    }
     res.status(200).json({
       status: 'success',
       message: 'If the email matches a registered account, a password reset link has been sent.',
@@ -228,7 +244,7 @@ export const resetPassword = async (
 
     const user = await prisma.user.findFirst({
       where: {
-        resetPasswordToken: validated.token,
+        resetPasswordToken: hashResetToken(validated.token),
         resetPasswordExp: {
           gt: new Date(),
         },
@@ -258,6 +274,49 @@ export const resetPassword = async (
     if (error instanceof z.ZodError) {
       return next(new AppError(error.errors[0].message, 400));
     }
+    next(error);
+  }
+};
+
+const verifyEmailSchema = z.object({
+  code: z.string().regex(/^\d{6}$/, 'El código debe tener 6 dígitos'),
+});
+
+export const verifyEmail = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { code } = verifyEmailSchema.parse(req.body);
+    const userId = req.user!.userId;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError('La cuenta ya no existe', 401);
+    if (!user.emailVerifiedAt) await verifyCode(userId, code);
+    res.status(200).json({ status: 'success', data: { emailVerified: true } });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return next(new AppError(error.errors[0].message, 400));
+    }
+    next(error);
+  }
+};
+
+export const resendVerification = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });
+    if (!user) throw new AppError('La cuenta ya no existe', 401);
+    if (user.emailVerifiedAt) {
+      res.status(200).json({ status: 'success', data: { emailVerified: true } });
+      return;
+    }
+    await sendVerificationCode(user);
+    res.status(200).json({ status: 'success', message: 'Te enviamos un nuevo código.' });
+  } catch (error) {
     next(error);
   }
 };

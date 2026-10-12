@@ -117,6 +117,28 @@ test('safety: checks all generated fields and never clears model risk flags', as
   }
 });
 
+test('orientation wording preserves reported facts and catalog labels without clinical prose', async () => {
+  const { buildSystemPrompt, PROMPT_VERSION } = require('../src/ai/prompts/orientationPrompt');
+  assert.equal(PROMPT_VERSION, '1.1');
+  assert.match(buildSystemPrompt(['Ansiedad']), /RESUMEN Y ESPECIALIDADES SIN VALORACIÓN CLÍNICA/);
+  const reported = 'Comentaste que desde hace tres semanas te cuesta desconectar del trabajo. Buscas videollamada por las tardes, hasta $400 MXN por sesión.';
+  assert.equal(AISafetyService.sanitizeSummary(reported), reported);
+  assert.equal(AISafetyService.sanitizeSummary(null), null);
+  for (const text of ['Usuario presenta estrés y rumiación laboral de 3 semanas de evolución.', 'Cuadro compatible con ansiedad.', 'Triaje completado.']) {
+    assert.notEqual(AISafetyService.sanitizeSummary(text), text);
+    assert.notEqual(AISafetyService.sanitizeSpecialtyReason(text), text);
+  }
+  const result = await new MockAIProvider().generateOrientation({ history: [], userMessage: 'Hola', availableSpecialties: ['Ansiedad'] });
+  result.conversation = { shouldContinue: false, isComplete: true, summary: 'Usuario presenta estrés.' };
+  result.needsProfile.suggestedSpecialties = [{ name: 'Ansiedad', reason: 'Profesionales que trabajan con la preocupación recurrente que mencionaste.' }];
+  const clean = AISafetyService.sanitizeOrientationResult(result);
+  assert.equal(clean.conversation.isComplete, true);
+  assert.equal(clean.needsProfile.suggestedSpecialties[0].name, 'Ansiedad');
+  assert.deepEqual(clean.safety, result.safety);
+  assert.deepEqual(clean.needsProfile.preferences, result.needsProfile.preferences);
+  assert.equal(aiOrientationResultSchema.safeParse(clean).success, true);
+});
+
 test('safety: retains context from users only and combines split risk expressions', () => {
   assert.equal(AISafetyService.evaluateConversation('la vida', [{ role: 'USER', content: 'Quiero quitarme' }]).riskLevel, 'EMERGENCY');
   assert.equal(AISafetyService.evaluateConversation('Hola', [{ role: 'USER', content: 'No quiero vivir' }]).riskLevel, 'EMERGENCY');

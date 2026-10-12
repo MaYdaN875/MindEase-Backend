@@ -23,6 +23,8 @@ model User {
   status              UserStatus                  @default(ACTIVE)
   resetPasswordToken  String?
   resetPasswordExp    DateTime?
+  emailVerifiedAt     DateTime?
+  emailVerificationCodes EmailVerificationCode[]
   createdAt           DateTime                    @default(now())
   updatedAt           DateTime                    @updatedAt
   userRoles           UserRole[]
@@ -861,4 +863,17 @@ model AICrisisResource {
   updatedAt   DateTime @updatedAt
 
   @@index([countryCode, isActive])
+}
+
+model EmailVerificationCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
 }

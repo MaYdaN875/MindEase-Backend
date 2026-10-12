@@ -41,7 +41,13 @@ export class AISafetyService {
     const texts = [result.assistantMessage, result.conversation.summary || '',
       result.needsProfile.primaryConcern || '', ...result.needsProfile.topics,
       ...result.needsProfile.suggestedSpecialties.flatMap(s => [s.name, s.reason])];
-    if (!texts.some(text => this.unsafe(text))) return result;
+    if (!texts.some(text => this.unsafe(text))) return {
+      ...result,
+      conversation: { ...result.conversation, summary: this.sanitizeSummary(result.conversation.summary ?? null) ?? undefined },
+      needsProfile: { ...result.needsProfile, suggestedSpecialties: result.needsProfile.suggestedSpecialties.map(s => ({
+        ...s, reason: this.sanitizeSpecialtyReason(s.reason),
+      })) },
+    };
     return { ...result, assistantMessage: this.SAFE_REPLY,
       needsProfile: { primaryConcern: null, topics: [], suggestedSpecialties: [], preferences: result.needsProfile.preferences },
       conversation: { shouldContinue: true, isComplete: false, summary: this.SAFE_SUMMARY },
@@ -50,7 +56,21 @@ export class AISafetyService {
   }
 
   static sanitizeSummary(text: string | null): string | null {
-    return text && this.unsafe(text) ? this.SAFE_SUMMARY : text;
+    if (text && this.unsafe(text)) return this.SAFE_SUMMARY;
+    // Style guard, not a clinical classifier. Do not fabricate a paraphrase or new user facts.
+    return text && this.hasClinicalReportStyle(text)
+      ? 'Este resumen automático no está disponible en un lenguaje adecuado. Puedes explorar las áreas de apoyo y revisar los perfiles profesionales.'
+      : text;
+  }
+
+  private static hasClinicalReportStyle(text: string): boolean {
+    return /\b(?:(?:el |la )?(?:usuario|usuaria|paciente) presenta|cuadro compatible con|triaje completado|de evolucion|rumiacion laboral)\b/i.test(this.normalized(text));
+  }
+
+  static sanitizeSpecialtyReason(text: string): string {
+    return this.unsafe(text) || this.hasClinicalReportStyle(text)
+      ? 'Un área de apoyo que puedes explorar con un profesional. No implica un diagnóstico.'
+      : text;
   }
 
   static evaluateConversation(text: string, history: Array<{ role: string; content: string }>, priorRisk: AIRiskLevelType = 'LOW'): AISafetyEvaluation {
