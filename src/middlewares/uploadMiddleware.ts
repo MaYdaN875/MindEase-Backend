@@ -5,7 +5,9 @@ import { Request } from 'express';
 import { AppError } from './errorMiddleware';
 
 // Private documents storage (psychologist credentials, etc.)
-const uploadDir = path.join(process.cwd(), 'storage', 'private_documents');
+const uploadDir = process.env.PRIVATE_DOCUMENTS_ROOT
+  ? path.resolve(process.env.PRIVATE_DOCUMENTS_ROOT)
+  : path.join(process.cwd(), 'storage', 'private_documents');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
