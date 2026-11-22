@@ -8,6 +8,7 @@ import { AppError } from '../middlewares/errorMiddleware';
 import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { sendEmail } from '../services/emailService';
 import { sendVerificationCode, verifyCode } from '../services/emailVerificationService';
+import { assertRegistrationLegalAcceptances } from '../services/legalTextService';
 
 const hashResetToken = (token: string): string => crypto.createHash('sha256').update(token).digest('hex');
 
@@ -17,7 +18,7 @@ const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters long'),
   phone: z.string().optional(),
   role: z.enum(['USER', 'PSYCHOLOGIST', 'ADMIN']).optional(),
-  acceptedPrivacy: z.boolean().optional(),
+  legalAcceptances: z.array(z.object({ id: z.string().uuid(), version: z.string().min(1).max(40) })).max(10).default([]),
 });
 
 const loginSchema = z.object({
@@ -62,6 +63,8 @@ export const register = async (
       throw new AppError('Role configuration error', 500);
     }
 
+    const registrationRole = validated.role === 'PSYCHOLOGIST' ? 'PSYCHOLOGIST' : 'USER';
+    const legalTexts = await assertRegistrationLegalAcceptances(registrationRole, validated.legalAcceptances);
     const user = await prisma.user.create({
       data: {
         email: validated.email.toLowerCase(),
@@ -73,13 +76,7 @@ export const register = async (
             roleId: roleObj.id,
           },
         },
-        ...(validated.acceptedPrivacy && {
-          consents: {
-            create: {
-              consentType: 'PRIVACY_POLICY',
-            },
-          },
-        }),
+        consents: { create: legalTexts.map(text => ({ consentType: text.code, legalTextId: text.id, legalCode: text.code, legalVersion: text.version })) },
       },
       include: {
         userRoles: {
@@ -215,8 +212,8 @@ export const forgotPassword = async (
     try {
       await sendEmail({
         to: user.email,
-        subject: 'Recupera tu contraseña de MindEase',
-        text: `Usa este código para restablecer tu contraseña (vence en 1 hora): ${resetToken}. Si no lo solicitaste, ignora este mensaje.`,
+        subject: 'Recupera tu contraseÃ±a de MindEase',
+        text: `Usa este cÃ³digo para restablecer tu contraseÃ±a (vence en 1 hora): ${resetToken}. Si no lo solicitaste, ignora este mensaje.`,
       });
     } catch (_e) {
       console.error('[PASSWORD_RESET] email delivery failed');
@@ -279,7 +276,7 @@ export const resetPassword = async (
 };
 
 const verifyEmailSchema = z.object({
-  code: z.string().regex(/^\d{6}$/, 'El código debe tener 6 dígitos'),
+  code: z.string().regex(/^\d{6}$/, 'El cÃ³digo debe tener 6 dÃ­gitos'),
 });
 
 export const verifyEmail = async (
@@ -315,7 +312,7 @@ export const resendVerification = async (
       return;
     }
     await sendVerificationCode(user);
-    res.status(200).json({ status: 'success', message: 'Te enviamos un nuevo código.' });
+    res.status(200).json({ status: 'success', message: 'Te enviamos un nuevo cÃ³digo.' });
   } catch (error) {
     next(error);
   }

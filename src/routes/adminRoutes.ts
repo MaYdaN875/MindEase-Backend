@@ -29,6 +29,7 @@ import {
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { checkRole } from '../middlewares/rbacMiddleware';
 import { listCommunityResources, saveCommunityCategory, setCommunityChannelStatus } from '../controllers/communityAdminController';
+import { createLegalText, listLegalTexts, updateLegalText } from '../controllers/legalController';
 
 const router = Router();
 
@@ -107,6 +108,9 @@ router.get('/specialties', checkRole(['ADMIN', 'REVISOR', 'SUPERADMIN']) as any,
 router.post('/specialties', checkRole(['ADMIN', 'SUPERADMIN']) as any, createSpecialty as any);
 router.put('/specialties/:specialtyId', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateSpecialty as any);
 router.delete('/specialties/:specialtyId', checkRole(['ADMIN', 'SUPERADMIN']) as any, deleteSpecialty as any);
+router.get('/legal-texts', checkRole(['ADMIN', 'SUPERADMIN']) as any, listLegalTexts as any);
+router.post('/legal-texts', checkRole(['ADMIN', 'SUPERADMIN']) as any, createLegalText as any);
+router.put('/legal-texts/:id', checkRole(['ADMIN', 'SUPERADMIN']) as any, updateLegalText as any);
 
 // System Notifications endpoints
 router.get('/notifications', listNotifications as any);

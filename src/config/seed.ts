@@ -98,6 +98,14 @@ export const seedDatabase = async (): Promise<void> => {
       }
     }
 
+    const LEGAL_TEXTS = [
+      { code: 'PRIVACY_POLICY', title: 'Aviso de privacidad', version: '1.0', audience: 'ALL' as const, content: 'MindEase trata los datos necesarios para crear y administrar la cuenta, facilitar citas, comunicaciones y los servicios contratados. Conservamos los datos conforme a la finalidad informada y aplicamos controles de acceso. Puedes solicitar información sobre tus datos mediante los canales de soporte. Este texto debe ser revisado y sustituido por la política aprobada por asesoría legal antes de un lanzamiento público.' },
+      { code: 'TERMS_OF_SERVICE', title: 'Términos de uso de MindEase', version: '1.0', audience: 'ALL' as const, content: 'MindEase es una plataforma tecnológica para conectar usuarios y profesionales, gestionar citas y facilitar servicios digitales. No sustituye servicios de emergencia ni garantiza atención inmediata. La persona usuaria debe proporcionar información veraz y usar la plataforma respetando a otras personas. Este texto debe ser revisado y sustituido por los términos aprobados por asesoría legal antes de un lanzamiento público.' },
+      { code: 'PROFESSIONAL_TERMS', title: 'Términos profesionales', version: '1.0', audience: 'PSYCHOLOGIST' as const, content: 'La persona profesional declara que la información y documentos enviados son veraces, que cuenta con las credenciales requeridas y que cumplirá con sus obligaciones profesionales aplicables. La aprobación de un perfil depende del proceso de verificación de MindEase. Este texto debe ser revisado y sustituido por los términos profesionales aprobados por asesoría legal antes de un lanzamiento público.' },
+    ];
+    console.log('Seeding default legal texts...');
+    for (const legal of LEGAL_TEXTS) await prisma.legalText.upsert({ where: { code: legal.code }, update: {}, create: legal });
+
     console.log('Database seeded successfully.');
   } catch (error) {
     console.error('Error seeding database:', error);

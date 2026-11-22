@@ -197,8 +197,34 @@ model UserConsent {
   id          String   @id @default(uuid())
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  consentType String // e.g., "PRIVACY_POLICY", "PROFESSIONAL_TERMS"
+  consentType String
+  legalTextId String?
+  legalText   LegalText? @relation(fields: [legalTextId], references: [id], onDelete: SetNull)
+  legalCode   String?
+  legalVersion String?
   acceptedAt  DateTime @default(now())
+
+  @@index([userId, legalCode, legalVersion])
+}
+
+enum LegalAudience {
+  ALL
+  PSYCHOLOGIST
+}
+
+model LegalText {
+  id          String        @id @default(uuid())
+  code        String        @unique
+  title       String
+  content     String        @db.Text
+  version     String
+  audience    LegalAudience @default(ALL)
+  isActive    Boolean       @default(true)
+  publishedAt DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  consents    UserConsent[]
+
+  @@index([isActive, audience])
 }
 
 model Notification {
