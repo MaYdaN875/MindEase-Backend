@@ -52,6 +52,7 @@ model User {
   receivedUserReports UserReport[]                @relation("ReportedUser")
   investigatedReports UserReport[]                @relation("ReportInvestigator")
   aiOrientationSessions AIOrientationSession[]    @relation("UserAIOrientations")
+  crisisEvents          CrisisEvent[]             @relation("UserCrisisEvents")
 }
 
 
@@ -775,6 +776,28 @@ enum AIRiskLevel {
   MODERATE
   HIGH
   EMERGENCY
+}
+
+enum CrisisSource {
+  AI_ORIENTATION
+  PRIVATE_CHAT
+  CONTACT_CHAT
+}
+
+// Deliberately stores no message text: this is an operational, minimal audit trail.
+model CrisisEvent {
+  id            String       @id @default(uuid())
+  userId        String
+  user          User         @relation("UserCrisisEvents", fields: [userId], references: [id], onDelete: Cascade)
+  source        CrisisSource
+  sourceId      String?
+  severity      AIRiskLevel
+  policyVersion String
+  detectedAt    DateTime     @default(now())
+
+  @@index([userId, detectedAt])
+  @@index([source, detectedAt])
+  @@index([sourceId])
 }
 
 model AIOrientationSession {

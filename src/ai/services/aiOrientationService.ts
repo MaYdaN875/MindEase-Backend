@@ -11,6 +11,7 @@ import { assertCanRecommend, requiresCrisisSupport } from './aiSessionPolicy';
 import { assertAIConsent } from './aiPrivacyService';
 import { orientationQuota } from './aiQuota';
 import { AIChatMessage, NeedsProfile } from '../types/ai.types';
+import { CrisisProtocolService } from '../../services/crisisProtocolService';
 
 const messages = { messages: { orderBy: [{ createdAt: 'asc' as const }, { id: 'asc' as const }] } };
 const crisisText = 'Tu seguridad es prioritaria. Esta orientación automática se ha detenido. Busca apoyo humano y comunícate con los recursos de ayuda que aparecen aquí; ante peligro inmediato, contacta a emergencias.';
@@ -142,6 +143,7 @@ export class AIOrientationService {
           : [session.riskLevel, preSafety.riskLevel, result.safety.riskLevel].includes('MODERATE') ? 'MODERATE' : 'LOW';
         const status = escalated ? 'ESCALATED' : result.conversation.isComplete ? 'COMPLETED' : 'ACTIVE';
         const content = escalated ? crisisText : AISafetyService.sanitizeAndValidateAssistantOutput(result.assistantMessage).safeText;
+        if (escalated) await CrisisProtocolService.record(tx, { userId, source: 'AI_ORIENTATION', sourceId: sessionId, severity: riskLevel });
         await tx.aIOrientationSession.update({ where: { id: sessionId }, data: {
           status, riskLevel, summary: escalated ? 'Orientación detenida: requiere apoyo humano.' : result.conversation.summary || null,
           ...(!escalated ? { needsProfile: result.needsProfile } : {}), completedAt: status === 'COMPLETED' ? new Date() : null,
