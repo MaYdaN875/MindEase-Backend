@@ -14,7 +14,7 @@ export const requireVerifiedEmail = async (
       select: { emailVerifiedAt: true },
     });
     if (!user?.emailVerifiedAt) {
-      return next(new AppError('Debes verificar tu correo electrónico para continuar.', 403, 'EMAIL_NOT_VERIFIED'));
+      return next(new AppError('Debes verificar tu correo electrÃ³nico para continuar.', 403, 'EMAIL_NOT_VERIFIED'));
     }
     next();
   } catch (error) {
