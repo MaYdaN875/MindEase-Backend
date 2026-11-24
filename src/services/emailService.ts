@@ -25,19 +25,23 @@ export const sendEmail = async (message: EmailMessage): Promise<void> => {
 
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'User-Agent': 'mindease-backend/1.0' },
     body: JSON.stringify({ from, to: [message.to], subject: message.subject, text: message.text }),
   });
 
   if (!response.ok) {
-    let errorName = 'unknown';
+    // Keep only a short, scrubbed excerpt: no email addresses, no codes.
+    let excerpt = '';
     try {
-      const body = (await response.json()) as { name?: string };
-      if (typeof body.name === 'string') errorName = body.name;
+      excerpt = (await response.text())
+        .replace(/[\w.+-]+@[\w.-]+/g, '[email]')
+        .replace(/\d{6}/g, '[code]')
+        .slice(0, 300);
     } catch (_e) {
-      // Body was not JSON; keep the generic label.
+      // Body unreadable.
     }
-    console.error(`[EMAIL:resend] failed status=${response.status} name=${errorName}`);
+    const type = response.headers.get('content-type') || 'none';
+    console.error(`[EMAIL:resend] failed status=${response.status} contentType=${type} body=${JSON.stringify(excerpt)}`);
     throw new Error('Email provider rejected the request');
   }
 };

@@ -30,11 +30,15 @@ export const sendVerificationCode = async (user: { id: string; email: string }):
     data: { userId: user.id, codeHash: hashCode(user.id, code), expiresAt: new Date(Date.now() + CODE_TTL_MS) },
   });
 
-  await sendEmail({
-    to: user.email,
-    subject: 'Tu código de verificación de MindEase',
-    text: `Tu código de verificación es ${code}. Vence en 15 minutos. Si no creaste una cuenta en MindEase, ignora este mensaje.`,
-  });
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Tu código de verificación de MindEase',
+      text: `Tu código de verificación es ${code}. Vence en 15 minutos. Si no creaste una cuenta en MindEase, ignora este mensaje.`,
+    });
+  } catch (_e) {
+    throw new AppError('No pudimos enviar el correo en este momento. Intenta de nuevo en unos minutos.', 503, 'EMAIL_DELIVERY_FAILED', true);
+  }
 };
 
 export const verifyCode = async (userId: string, code: string): Promise<void> => {
