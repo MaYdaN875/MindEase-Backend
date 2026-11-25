@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { serializable } from '../services/clinicalPolicy';
 import { CrisisProtocolService } from '../services/crisisProtocolService';
+import { sendPushToUser } from '../services/pushNotificationService';
 
 export function chatHandler(fn: (req: AuthenticatedRequest, res: Response) => Promise<void>) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -35,12 +36,12 @@ export function mountMessages(router: Router, resolve: Resolve, notificationType
   router.post('/:id/messages', chatHandler(async (req, res) => {
     const id = z.string().uuid().parse(req.params.id), userId = req.user!.userId;
     const input = z.object({ clientId: z.string().uuid(), content: z.string().trim().min(1).max(4000) }).strict().parse(req.body);
-    const message = await serializable(async tx => {
+    const { message, notifyUserId } = await serializable(async tx => {
       const c = await resolve(tx, id, userId);
       const previous = await tx.privateMessage.findFirst({ where: { ...c.filter, senderId: userId, clientId: input.clientId }, select: projection });
       if (previous) {
         if (previous.content !== input.content) throw new AppError('Identificador usado por otro mensaje', 409);
-        return previous;
+        return { message: previous, notifyUserId: null as string | null };
       }
       if (!c.canSend) throw new AppError('Conversación en modo lectura', 409);
       await CrisisProtocolService.guardChatMessage(tx, {
@@ -52,8 +53,11 @@ export function mountMessages(router: Router, resolve: Resolve, notificationType
       if (!await tx.notification.findFirst({ where: { userId: c.recipientId, type: notificationType, referenceId: id, isRead: false } }))
         await tx.notification.create({ data: { userId: c.recipientId, type: notificationType, referenceId: id,
           title: 'Nuevo mensaje privado', content: 'Tienes mensajes sin leer en MindEase.' } });
-      return saved;
+      return { message: saved, notifyUserId: c.recipientId };
     });
+    if (notifyUserId) {
+      void sendPushToUser({ userId: notifyUserId, type: notificationType, referenceId: id });
+    }
     res.json({ status: 'success', data: { message } });
   }));
   router.post('/:id/read', chatHandler(async (req, res) => {

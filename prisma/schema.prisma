@@ -25,6 +25,7 @@ model User {
   resetPasswordExp    DateTime?
   emailVerifiedAt     DateTime?
   emailVerificationCodes EmailVerificationCode[]
+  deviceTokens        DeviceToken[]
   createdAt           DateTime                    @default(now())
   updatedAt           DateTime                    @updatedAt
   userRoles           UserRole[]
@@ -925,4 +926,16 @@ model EmailVerificationCode {
   createdAt DateTime  @default(now())
 
   @@index([userId, createdAt])
+}
+
+model DeviceToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  platform   String   @default("android")
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
 }
