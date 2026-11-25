@@ -5,6 +5,7 @@ import { serializable, requireProfessional, eligibleProfessionalWhere } from './
 import { calculateFees } from './feePolicy';
 import { PaymentGatewayChargeResult } from './paymentGateway';
 import { cents } from './money';
+import { sendPushToUser } from './pushNotificationService';
 
 export async function requirePaid(tx: Prisma.TransactionClient, appointment: { id: string; price: number; currency: string }) {
   if (appointment.price === 0) return;
@@ -43,7 +44,8 @@ export async function reservePayment(userId: string, appointmentId: string, key:
 }
 
 export async function finalizePayment(attemptId: string, result: PaymentGatewayChargeResult) {
-  return serializable(async tx => {
+  let pushTargets: { userId: string; referenceId: string }[] = [];
+  const savedPayment = await serializable(async tx => {
     const attempt = await tx.paymentAttempt.findUniqueOrThrow({ where: { id: attemptId }, include: { payment: { include: { appointment: true } } } });
     if (attempt.status !== 'PROCESSING') return attempt.payment;
     const payment = attempt.payment;
@@ -63,12 +65,19 @@ export async function finalizePayment(attemptId: string, result: PaymentGatewayC
     await tx.paymentAttempt.update({ where: { id: attempt.id }, data: { status: result.status } });
     if (result.success && !mustRefund) {
       const psychologist = await tx.psychologistProfile.findUniqueOrThrow({ where: { id: payment.psychologistId } });
-      for (const userId of [payment.patientId, psychologist.userId]) {
+      const recipients = [payment.patientId, psychologist.userId];
+      for (const userId of recipients) {
         await tx.notification.create({ data: { userId, title: 'Solicitud de cita pagada (pruebas)', content: 'El pago de prueba se registro. La cita espera aprobacion del profesional.', type: 'APPOINTMENT_REQUEST', referenceId: payment.appointmentId } });
       }
+      pushTargets = recipients.map((userId) => ({ userId, referenceId: payment.appointmentId }));
     }
     return saved;
   });
+
+  for (const target of pushTargets) {
+    void sendPushToUser({ userId: target.userId, type: 'APPOINTMENT_REQUEST', referenceId: target.referenceId });
+  }
+  return savedPayment;
 }
 
 export async function recoverPayments() {
