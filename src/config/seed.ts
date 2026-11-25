@@ -1,4 +1,5 @@
 import prisma from './db';
+import { hashPassword } from '../utils/hash';
 
 const ROLES = [
   'USER',
@@ -105,6 +106,43 @@ export const seedDatabase = async (): Promise<void> => {
     ];
     console.log('Seeding default legal texts...');
     for (const legal of LEGAL_TEXTS) await prisma.legalText.upsert({ where: { code: legal.code }, update: {}, create: legal });
+
+    if (process.env.NODE_ENV !== 'production' && process.env.SEED_TEST_USER === 'true') {
+      const email = (process.env.TEST_USER_EMAIL || 'paciente@test.mindease.local').trim().toLowerCase();
+      const role = await prisma.role.findUnique({ where: { name: 'USER' } });
+      if (!role) throw new Error('USER role is missing after seed');
+
+      const existing = await prisma.user.findUnique({ where: { email }, include: { userRoles: true } });
+      if (!existing) {
+        const password = process.env.TEST_USER_PASSWORD;
+        if (!password || password.length < 8) {
+          throw new Error('TEST_USER_PASSWORD is required and must contain at least 8 characters');
+        }
+        await prisma.user.create({
+          data: {
+            email,
+            passwordHash: await hashPassword(password),
+            name: 'Paciente de prueba',
+            status: 'ACTIVE',
+            emailVerifiedAt: new Date(),
+            userRoles: { create: { roleId: role.id } },
+          },
+        });
+        console.log(`Test patient seeded and email pre-verified: ${email}`);
+      } else {
+        await prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            status: 'ACTIVE',
+            emailVerifiedAt: existing.emailVerifiedAt || new Date(),
+            userRoles: existing.userRoles.length
+              ? undefined
+              : { create: { roleId: role.id } },
+          },
+        });
+        console.log(`Test patient restored and email pre-verified: ${email}`);
+      }
+    }
 
     console.log('Database seeded successfully.');
   } catch (error) {

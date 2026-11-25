@@ -53,6 +53,8 @@ model User {
   investigatedReports UserReport[]                @relation("ReportInvestigator")
   aiOrientationSessions AIOrientationSession[]    @relation("UserAIOrientations")
   crisisEvents          CrisisEvent[]             @relation("UserCrisisEvents")
+  initialInterview     InitialInterview?
+  interviewAccessLogs  InitialInterviewAccessLog[] @relation("InterviewAccessActor")
 }
 
 
@@ -806,8 +808,56 @@ enum AIRiskLevel {
 
 enum CrisisSource {
   AI_ORIENTATION
+  INITIAL_INTERVIEW
   PRIVATE_CHAT
   CONTACT_CHAT
+}
+
+enum InitialInterviewStatus {
+  IN_PROGRESS
+  ESCALATED
+  COMPLETED
+}
+
+enum InitialInterviewAccessAction {
+  VIEW_REPORT
+  DOWNLOAD_PDF
+}
+
+model InitialInterview {
+  id                 String                  @id @default(uuid())
+  patientId          String                  @unique
+  patient            User                    @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  status             InitialInterviewStatus  @default(IN_PROGRESS)
+  nextQuestionId     String?
+  consentVersion     String
+  adultConfirmed     Boolean
+  riskLevel          AIRiskLevel             @default(LOW)
+  answersCiphertext  String?                 @db.Text
+  reportCiphertext   String?                 @db.Text
+  pdfCiphertext      String?                 @db.Text
+  startedAt          DateTime                @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  accessLogs         InitialInterviewAccessLog[]
+
+  @@index([status, updatedAt])
+}
+
+model InitialInterviewAccessLog {
+  id                 String                       @id @default(uuid())
+  interviewId        String
+  interview          InitialInterview             @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  actorUserId        String
+  actor              User                         @relation("InterviewAccessActor", fields: [actorUserId], references: [id], onDelete: Cascade)
+  appointmentId      String
+  action             InitialInterviewAccessAction
+  accessedAt         DateTime                     @default(now())
+
+  @@index([interviewId, accessedAt])
+  @@index([actorUserId, accessedAt])
+  @@index([appointmentId])
 }
 
 // Deliberately stores no message text: this is an operational, minimal audit trail.

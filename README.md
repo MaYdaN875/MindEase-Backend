@@ -119,6 +119,23 @@ Si prefieres ejecutar el servidor Node.js directamente en tu máquina:
    npm start
    ```
 
+### Datos de demostración locales
+
+Para crear perfiles sintéticos de psicólogos y una cita con pago simulado, usa
+`npm run seed:local-demo` después de que exista el paciente de prueba y su
+entrevista esté completada. El script requiere `NODE_ENV=development`,
+`ENABLE_LOCAL_TEST_DATA=true` y una base PostgreSQL en `localhost` o
+`127.0.0.1`; se niega a ejecutarse contra producción o una base remota.
+
+Define `TEST_PSYCHOLOGIST_EMAIL` y `TEST_PSYCHOLOGIST_PASSWORD` solo en la
+terminal al ejecutarlo. La contraseña no se guarda en el repositorio. Los demás
+perfiles usan credenciales aleatorias que el script imprime una sola vez cuando
+los crea. Estos datos y el estado de verificación son exclusivamente fixtures
+locales: no representan profesionales acreditados ni pagos reales.
+Si habilitas `SEED_TEST_USER=true` para crear el paciente de prueba, configura
+también `TEST_USER_PASSWORD` localmente; no existe una contraseña compartida
+predeterminada.
+
 ---
 
 ## 📡 Catálogo de Endpoints Principales

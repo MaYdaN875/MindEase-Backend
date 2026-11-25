@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../middlewares/authMiddleware';
 import { AppError } from '../middlewares/errorMiddleware';
 import { serializable } from '../services/clinicalPolicy';
 import { CrisisProtocolService } from '../services/crisisProtocolService';
+import { AISafetyService } from '../ai/services/aiSafetyService';
 
 export function chatHandler(fn: (req: AuthenticatedRequest, res: Response) => Promise<void>) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -43,6 +44,9 @@ export function mountMessages(router: Router, resolve: Resolve, notificationType
         return previous;
       }
       if (!c.canSend) throw new AppError('Conversación en modo lectura', 409);
+      if (AISafetyService.containsProfanity(input.content)) {
+        throw new AppError('El mensaje contiene lenguaje inapropiado. Usa palabras respetuosas.', 400, 'PROFANITY_BLOCKED');
+      }
       await CrisisProtocolService.guardChatMessage(tx, {
         userId, source: 'appointmentId' in c.filter ? 'PRIVATE_CHAT' : 'CONTACT_CHAT', sourceId: id, content: input.content,
       });
