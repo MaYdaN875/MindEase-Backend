@@ -2,7 +2,7 @@ import { AIRiskLevel, Prisma } from '@prisma/client';
 import { AppError } from '../middlewares/errorMiddleware';
 import { AISafetyService } from '../ai/services/aiSafetyService';
 
-export type CrisisSource = 'AI_ORIENTATION' | 'PRIVATE_CHAT' | 'CONTACT_CHAT';
+export type CrisisSource = 'AI_ORIENTATION' | 'INITIAL_INTERVIEW' | 'PRIVATE_CHAT' | 'CONTACT_CHAT';
 
 /** Shared operational policy. It is intentionally not a diagnostic or monitoring service. */
 export class CrisisProtocolService {

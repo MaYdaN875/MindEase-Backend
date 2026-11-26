@@ -11,6 +11,24 @@ export class AISafetyService {
       .replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim();
   }
 
+  private static profanityNormalized(text: string): string {
+    return this.normalized(text)
+      .replace(/[@]/g, 'a').replace(/[$]/g, 's')
+      .replace(/[4]/g, 'a').replace(/[3]/g, 'e').replace(/[1!]/g, 'i')
+      .replace(/[5]/g, 's').replace(/[7]/g, 't').replace(/[0]/g, 'o')
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  private static readonly PROFANITY_PATTERNS = [
+    /\b(?:pinche|pendej(?:o|a|os|as)?|cabron(?:a|es)?|cabr[oó]n(?:a|es)?|mierda|chingo|chinga(?:r|da|te|do|do)?|ching[aá](?:r|da|te|do)?|put(?:a|o|as|os)|jod(?:er|ete|ido|ida)|verga|culero|mam[aó]n(?:a|es)?|hij(?:o|a)\s+de\s+(?:tu\s+)?(?:puta|perra|chinga(?:da|r))|coj(?:e|ete|ido)|pito)\b/i,
+  ];
+
+  static containsProfanity(text: string): boolean {
+    const normalized = this.profanityNormalized(text).toLocaleLowerCase('es-MX');
+    const compact = normalized.replace(/[^a-z0-9\s]/gi, '').replace(/\s+/g, ' ');
+    return this.PROFANITY_PATTERNS.some(pattern => pattern.test(normalized) || pattern.test(compact));
+  }
+
   // Defense in depth only: these rules are not a clinical classifier or proof of safe output.
   private static readonly OUTPUT_VIOLATIONS = [
     /\b(tienes?|sufres? de|padeces?|presentas?)\s+(?:un[ao]?\s+|de\s+)?(?:depresion|ansiedad clinica|trastorno|bipolaridad|esquizofrenia|tdah)\b/i,

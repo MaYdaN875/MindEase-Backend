@@ -122,7 +122,7 @@ export const register = async (
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return next(new AppError(error.errors[0].message, 400));
+      return next(new AppError(error.issues[0]?.message || 'Datos inválidos', 400));
     }
     next(error);
   }
@@ -172,7 +172,7 @@ export const login = async (
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return next(new AppError(error.errors[0].message, 400));
+      return next(new AppError(error.issues[0]?.message || 'Datos inválidos', 400));
     }
     next(error);
   }
@@ -225,7 +225,7 @@ export const forgotPassword = async (
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return next(new AppError(error.errors[0].message, 400));
+      return next(new AppError(error.issues[0]?.message || 'Datos inválidos', 400));
     }
     next(error);
   }
@@ -269,7 +269,7 @@ export const resetPassword = async (
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return next(new AppError(error.errors[0].message, 400));
+      return next(new AppError(error.issues[0]?.message || 'Datos inválidos', 400));
     }
     next(error);
   }
@@ -293,7 +293,7 @@ export const verifyEmail = async (
     res.status(200).json({ status: 'success', data: { emailVerified: true } });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return next(new AppError(error.errors[0].message, 400));
+      return next(new AppError(error.issues[0]?.message || 'Datos inválidos', 400));
     }
     next(error);
   }

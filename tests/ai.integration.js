@@ -53,7 +53,8 @@ async function main() {
       // The old migration chain is incomplete (PaymentStatus is missing after the initial migration).
       const beforeAI = fs.readFileSync(fullSchema, 'utf8')
         .replace(/^(?:model|enum) AI\w+\s*\{[^}]*\}\s*/gm, '')
-        .replace(/^.*\b(?:AIOrientationSession|AIRecommendation)\[\].*\r?\n/gm, '');
+        .replace(/^(?:model|enum) (?:InitialInterview|InitialInterviewAccessLog|InitialInterviewStatus|InitialInterviewAccessAction|CrisisEvent|CrisisSource)\s*\{[^}]*\}\s*/gm, '')
+        .replace(/^.*\b(?:AIOrientationSession|AIRecommendation|InitialInterview|InitialInterviewAccessLog|CrisisEvent)(?:\[\]|\?).*\r?\n/gm, '');
       schemaFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'mindease-ai-schema-'));
       const fixturePath = path.join(schemaFixture, 'schema.prisma');
       fs.writeFileSync(fixturePath, beforeAI);
@@ -64,6 +65,10 @@ async function main() {
         '--file', path.join(__dirname, '../prisma/migrations/20260928000000_ai_message_requests/migration.sql')], { env: process.env, stdio: 'pipe' });
       execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
         '--file', path.join(__dirname, '../prisma/migrations/20260929000000_ai_provider_gate/migration.sql')], { env: process.env, stdio: 'pipe' });
+      execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
+        '--file', path.join(__dirname, '../prisma/migrations/20261018000000_crisis_protocol/migration.sql')], { env: process.env, stdio: 'pipe' });
+      execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', fixturePath,
+        '--file', path.join(__dirname, '../prisma/migrations/20261124120000_initial_interview/migration.sql')], { env: process.env, stdio: 'pipe' });
       execFileSync(process.execPath, [prismaCli, 'migrate', 'diff', '--from-schema-datasource', fullSchema,
         '--to-schema-datamodel', fullSchema, '--exit-code'], { env: process.env, stdio: 'pipe' });
       check('AI migration produces exact Prisma schema', true);

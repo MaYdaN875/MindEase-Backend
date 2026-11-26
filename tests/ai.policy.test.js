@@ -46,6 +46,14 @@ test('safety: detect MODERATE and LOW risk for normal emotional distress', () =>
   assert.equal(low.requiresImmediateHelp, false);
 });
 
+test('safety: block profanity and common obfuscated forms', () => {
+  assert.equal(AISafetyService.containsProfanity('Eres un pendejo'), true);
+  assert.equal(AISafetyService.containsProfanity('Qué mierd@'), true);
+  assert.equal(AISafetyService.containsProfanity('ch1ng0'), true);
+  assert.equal(AISafetyService.containsProfanity('Estoy atravesando una situación difícil'), false);
+  assert.equal(AISafetyService.containsProfanity('Necesito ayuda con mi trabajo'), false);
+});
+
 test('safety: sanitize prohibiting clinical diagnostic statements in assistant output', () => {
   const invalidOutput = 'Según lo que me cuentas, tienes depresión severa y te diagnostico con trastorno bipolar.';
   const { safeText, hasViolations } = AISafetyService.sanitizeAndValidateAssistantOutput(invalidOutput);

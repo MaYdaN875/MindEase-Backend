@@ -28,8 +28,6 @@ services:
     environment:
       PORT: 3000
       DATABASE_URL: postgresql://postgres:postgres@db:5432/mindease?schema=public
-      JWT_SECRET: super-secret-mindease-jwt-key-change-in-production
-      JWT_EXPIRES_IN: 7d
     depends_on:
       db:
         condition: service_healthy

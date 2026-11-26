@@ -20,6 +20,7 @@ import conversationRoutes from './routes/conversationRoutes';
 import reviewRoutes from './routes/reviewRoutes';
 import { errorHandler } from './middlewares/errorMiddleware';
 import { stripeWebhook } from './controllers/stripeController';
+import initialInterviewRoutes from './interview/initialInterviewRoutes';
 
 
 dotenv.config();
@@ -51,6 +52,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/community', communityRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/interview', initialInterviewRoutes);
 app.use('/api/crisis', crisisRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/conversations', conversationRoutes);

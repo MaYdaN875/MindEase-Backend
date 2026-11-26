@@ -159,7 +159,7 @@ export const updateProfile = async (
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return next(new AppError(error.errors[0].message, 400));
+      return next(new AppError(error.issues[0]?.message || 'Datos inválidos', 400));
     }
     next(error);
   }
