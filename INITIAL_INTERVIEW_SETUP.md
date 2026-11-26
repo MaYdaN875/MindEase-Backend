@@ -1,5 +1,10 @@
 # Entrevista inicial de MindEase
 
+**Prototipo académico:** solo para cuentas autorizadas con datos ficticios. No
+hay supervisión humana, atención clínica ni comunicación automática con
+emergencias. La reanudación tras una alerta está deshabilitada. No presentar el
+informe como diagnóstico ni usar este modo para pacientes reales.
+
 ## Arquitectura integrada
 
 - Flutter reutiliza `AuthService`, el tema `AppTheme` y la navegación de `AppRoot`. La entrevista solo se activa para pacientes con correo verificado y estado pendiente/en curso.
@@ -12,7 +17,7 @@
 
 ## Configuración
 
-1. Configura `GEMINI_API_KEY` y `GEMINI_MODEL` en el backend; pueden ser los mismos que usa orientación.
+1. Configura `GEMINI_API_KEY` y `GEMINI_MODEL` en el backend; pueden ser los mismos que usa orientación. Su funcionamiento en orientación no prueba por sí mismo el informe estructurado.
 2. Genera una clave independiente de 32 bytes y guárdala en el gestor de secretos:
 
    ```powershell
@@ -31,6 +36,12 @@
    ```
 
    La configuración local puede aplicarse con `npm run prisma:migrate`.
+7. Solo en un entorno controlado y tras el despliegue, activa
+   `INITIAL_INTERVIEW_DEMO_ENABLED=true` y configura
+   `INITIAL_INTERVIEW_DEMO_USER_IDS` con los UUID de los pacientes ficticios,
+   separados por comas. Sin ambos valores, la entrevista permanece desactivada.
+   Los profesionales ficticios acceden únicamente con las reglas de cita y pago
+   existentes. No utilices cuentas ni respuestas de personas reales.
 
 ## Endpoints
 

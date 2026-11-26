@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { InitialInterviewReport } from './geminiReportProvider';
 
-const disclaimer = 'Este documento fue generado mediante inteligencia artificial a partir de las respuestas del paciente. Es un informe orientativo y no constituye un diagnóstico clínico definitivo. Toda conclusión deberá ser evaluada y validada por un profesional de salud mental.';
+const disclaimer = 'DEMOSTRACIÓN ACADÉMICA con datos ficticios. Informe generado mediante IA, sin supervisión clínica ni validez para diagnóstico, tratamiento o atención real.';
 
 export async function createInitialInterviewPdf(input: {
   recordId: string;
@@ -16,7 +16,7 @@ export async function createInitialInterviewPdf(input: {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
 
     doc.font('Helvetica-Bold').fontSize(18).fillColor('#006A6A')
-      .text('Informe de entrevista inicial y orientación clínica preliminar', { align: 'center' });
+      .text('DEMOSTRACIÓN ACADÉMICA — Entrevista inicial ficticia', { align: 'center' });
     doc.moveDown(0.7);
     doc.font('Helvetica').fontSize(9).fillColor('#334155')
       .text(`Expediente: ${input.recordId}`)

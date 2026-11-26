@@ -118,7 +118,7 @@ export const getProfessionalReport = handle(async (req, res) => {
       interviewDate: data.interviewDate,
       report: data.report,
       answers: data.answers,
-      disclaimer: 'Este documento fue generado mediante inteligencia artificial a partir de las respuestas del paciente. Es un informe orientativo y no constituye un diagnóstico clínico definitivo. Toda conclusión deberá ser evaluada y validada por un profesional de salud mental.',
+      disclaimer: 'DEMOSTRACIÓN ACADÉMICA con datos ficticios. Informe generado mediante IA, sin supervisión clínica ni validez para diagnóstico, tratamiento o atención real.',
     },
   });
 });
