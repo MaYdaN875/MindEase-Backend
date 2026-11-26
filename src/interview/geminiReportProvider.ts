@@ -25,6 +25,22 @@ const reportSchema = z.object({
   professionalRecommendations: z.array(z.string().max(500)).max(20),
 }).strict();
 
+// Ask Gemini for the same structure we validate locally. Length limits remain
+// enforced by Zod; removing them here keeps the provider grammar manageable.
+function providerReportSchema(): unknown {
+  const schema = z.toJSONSchema(reportSchema);
+  const simplify = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(simplify);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !['$schema', 'maxLength', 'maxItems'].includes(key))
+        .map(([key, entry]) => [key, simplify(entry)]));
+    }
+    return value;
+  };
+  return simplify(schema);
+}
+
 export type InitialInterviewReport = z.infer<typeof reportSchema>;
 
 const identifyingQuestionIds = new Set([
@@ -117,7 +133,7 @@ export async function generateInitialInterviewReport(answers: Record<string, str
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: instruction }] },
           contents: [{ role: 'user', parts: [{ text: JSON.stringify(interviewAnswersForAI(answers)) }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 4096, responseMimeType: 'application/json' },
+          generationConfig: { temperature: 0, maxOutputTokens: 4096, responseMimeType: 'application/json', responseJsonSchema: providerReportSchema() },
         }),
       }, timeoutMs,
     );
@@ -132,6 +148,8 @@ export async function generateInitialInterviewReport(answers: Record<string, str
     }
     const parsed = reportSchema.safeParse(JSON.parse(content));
     if (!parsed.success) {
+      // Codes only: never log generated text, answers, or provider field names.
+      console.warn('[INTERVIEW_AI_SCHEMA_INVALID]', JSON.stringify({ issueCodes: [...new Set(parsed.error.issues.map(issue => issue.code))] }));
       throw new AppError('La respuesta del servicio de informes no cumplió el formato requerido.', 502, 'INTERVIEW_AI_INVALID_RESPONSE');
     }
     return sanitizeReport(parsed.data);

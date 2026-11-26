@@ -104,6 +104,12 @@ test('Gemini interview report requires its own privacy approval and validates th
     assert.equal(result.mainConcern, 'Estrés laboral');
     assert.equal(JSON.stringify(sent).includes('PRIVATE_NAME'), false);
     assert.equal(sent.generationConfig.responseMimeType, 'application/json');
+    assert.equal(sent.generationConfig.responseJsonSchema.type, 'object');
+    assert.ok(sent.generationConfig.responseJsonSchema.required.includes('preliminaryHypotheses'));
+    assert.equal(sent.generationConfig.responseJsonSchema.properties.preliminaryHypotheses.items.type, 'object');
+    assert.equal(sent.generationConfig.responseJsonSchema.additionalProperties, false);
+    global.fetch = async () => ({ ok: true, json: async () => ({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ mainConcern: 'Incomplete' }) }] } }] }) });
+    await assert.rejects(generateInitialInterviewReport({}), error => error.code === 'INTERVIEW_AI_INVALID_RESPONSE');
     global.fetch = async () => ({ ok: true, json: async () => ({ candidates: [{ finishReason: 'SAFETY' }] }) });
     await assert.rejects(generateInitialInterviewReport({}), error => error.code === 'INTERVIEW_AI_INVALID_RESPONSE');
   } finally {
