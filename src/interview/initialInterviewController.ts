@@ -118,7 +118,7 @@ export const getProfessionalReport = handle(async (req, res) => {
       interviewDate: data.interviewDate,
       report: data.report,
       answers: data.answers,
-      disclaimer: 'DEMOSTRACIÓN ACADÉMICA con datos ficticios. Informe generado mediante IA, sin supervisión clínica ni validez para diagnóstico, tratamiento o atención real.',
+      disclaimer: 'Informe preliminar generado mediante IA. No constituye un diagnóstico ni sustituye la valoración de un profesional.',
     },
   });
 });

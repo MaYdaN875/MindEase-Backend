@@ -2,9 +2,6 @@ import { Router } from 'express';
 import { authMiddleware } from '../middlewares/authMiddleware';
 import { requireVerifiedEmail } from '../middlewares/emailVerifiedMiddleware';
 import { aiRateLimiter } from '../ai/middlewares/aiRateLimiter';
-import { AuthenticatedRequest } from '../middlewares/authMiddleware';
-import { isDemoInterviewAllowed } from './interviewDemoPolicy';
-import { AppError } from '../middlewares/errorMiddleware';
 import {
   answer,
   complete,
@@ -27,14 +24,6 @@ router.use((_req, res, next) => {
 router.use(authMiddleware as any, requireVerifiedEmail as any);
 
 router.get('/status', getStatus as any);
-router.use((req: AuthenticatedRequest, _res, next) => {
-  const professionalPatient = /^\/professional\/patients\/([^/]+)\//.exec(req.path)?.[1];
-  const patientId = professionalPatient || req.user?.userId || '';
-  if (!isDemoInterviewAllowed(patientId)) {
-    return next(new AppError('La entrevista de demostración no está habilitada para esta cuenta.', 404, 'INTERVIEW_DEMO_UNAVAILABLE'));
-  }
-  next();
-});
 router.get('/privacy', getPrivacyNotice as any);
 router.get('/progress', getProgress as any);
 router.post('/start', aiRateLimiter as any, start as any);

@@ -10,10 +10,9 @@ import { decryptClinicalData, encryptClinicalData, assertInitialInterviewEncrypt
 import { getInterviewQuestion, initialInterviewQuestions, nextInterviewQuestionId, validateInterviewAnswer } from './initialInterviewQuestions';
 import { createInitialInterviewPdf } from './initialInterviewPdf';
 import { assertInterviewProviderConfiguration, generateInitialInterviewReport, InitialInterviewReport } from './geminiReportProvider';
-import { isDemoInterviewAllowed } from './interviewDemoPolicy';
 
 const privacyText = [
-  'PROTOTIPO DE DEMOSTRACIÓN ACADÉMICA: utiliza únicamente datos ficticios. No hay supervisión humana ni seguimiento de alertas, y no se contactará a un profesional o a emergencias automáticamente.',
+  'No hay supervisión humana ni seguimiento automático de alertas. No se contactará a un profesional ni a emergencias automáticamente.',
   'Esta entrevista inicial estructurada es voluntaria y está disponible para personas adultas. No es un diagnóstico, tratamiento ni servicio de emergencia.',
   'Se recopilan tus respuestas para preparar un informe preliminar dirigido exclusivamente a profesionales autorizados con una cita pagada asociada a tu expediente.',
   'Las respuestas y el informe se cifran en la base de datos. Para generar el informe se envían a Google Gemini respuestas relacionadas con la atención. Se excluyen ciertos campos identificativos y se intentan ocultar datos de contacto, pero el texto libre puede contener datos que permitan identificarte.',
@@ -62,9 +61,6 @@ function progressView(interview: {
 }
 
 export async function getInterviewStatus(patientId: string) {
-  if (!isDemoInterviewAllowed(patientId)) {
-    return { status: 'UNAVAILABLE', available: false };
-  }
   const [interview, consent] = await Promise.all([
     prisma.initialInterview.findUnique({ where: { patientId }, select: { status: true } }),
     prisma.userConsent.findFirst({

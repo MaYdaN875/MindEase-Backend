@@ -17,8 +17,6 @@ async function main() {
   process.env.JWT_SECRET = randomUUID();
   process.env.INITIAL_INTERVIEW_ENCRYPTION_KEY = randomBytes(32).toString('base64');
   process.env.INITIAL_INTERVIEW_ALLOW_DEV_REPORT = 'true';
-  process.env.INITIAL_INTERVIEW_DEMO_ENABLED = 'true';
-  process.env.INITIAL_INTERVIEW_DEMO_USER_IDS = '';
   process.env.AI_RATE_LIMIT_PER_MINUTE = '1000';
   process.env.FCM_ENABLED = 'false';
   delete process.env.GEMINI_API_KEY;
@@ -41,13 +39,9 @@ async function main() {
     }
     const patient = await makePatient('patient');
     const unverified = await makePatient('unverified', false);
-    assert.equal((await call('GET', '/interview/status', patient.token)).body.data.status, 'UNAVAILABLE');
-    assert.equal((await call('GET', '/interview/progress', patient.token)).code, 404);
-    process.env.INITIAL_INTERVIEW_DEMO_USER_IDS = patient.user.id;
-    process.env.INITIAL_INTERVIEW_DEMO_ENABLED = 'false';
-    assert.equal((await call('GET', '/interview/status', patient.token)).body.data.status, 'UNAVAILABLE');
-    assert.equal((await call('GET', '/interview/progress', patient.token)).code, 404);
-    process.env.INITIAL_INTERVIEW_DEMO_ENABLED = 'true';
+    const anotherPatient = await makePatient('another-patient');
+    assert.equal((await call('GET', '/interview/status', anotherPatient.token)).body.data.status, 'PENDING');
+    assert.equal((await call('GET', '/interview/progress', patient.token)).code, 200);
     assert.equal((await call('GET', '/interview/status')).code, 401);
     assert.equal((await call('GET', '/interview/status', unverified.token)).code, 403);
     let status = await call('GET', '/interview/status', patient.token);
@@ -98,7 +92,6 @@ async function main() {
     assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
     assert.equal(await db.initialInterviewAccessLog.count({ where: { interviewId: stored.id } }), 2);
     const crisisPatient = await makePatient('crisis');
-    process.env.INITIAL_INTERVIEW_DEMO_USER_IDS += ',' + crisisPatient.user.id;
     status = await call('GET', '/interview/status', crisisPatient.token);
     result = await call('POST', '/interview/start', crisisPatient.token, { consentVersion: status.body.data.privacyNotice.version, adultConfirmed: true });
     result = await call('POST', '/interview/answer', crisisPatient.token, { questionId: result.body.data.question.id, answer: 'Necesito un consejo, estoy pensando en quitarme la vida' });

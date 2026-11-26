@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { InitialInterviewReport } from './geminiReportProvider';
 
-const disclaimer = 'DEMOSTRACIÓN ACADÉMICA con datos ficticios. Informe generado mediante IA, sin supervisión clínica ni validez para diagnóstico, tratamiento o atención real.';
+const disclaimer = 'Informe preliminar generado mediante IA. No constituye un diagnóstico ni sustituye la valoración de un profesional.';
 
 export async function createInitialInterviewPdf(input: {
   recordId: string;
@@ -16,7 +16,7 @@ export async function createInitialInterviewPdf(input: {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
 
     doc.font('Helvetica-Bold').fontSize(18).fillColor('#006A6A')
-      .text('DEMOSTRACIÓN ACADÉMICA — Entrevista inicial ficticia', { align: 'center' });
+      .text('Entrevista inicial — Informe preliminar', { align: 'center' });
     doc.moveDown(0.7);
     doc.font('Helvetica').fontSize(9).fillColor('#334155')
       .text(`Expediente: ${input.recordId}`)
